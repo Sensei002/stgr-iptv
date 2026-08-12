@@ -25,8 +25,8 @@ QSize ChannelDelegate::sizeHint(const QStyleOptionViewItem& option, const QModel
 {
     Q_UNUSED(index);
     if (m_mode == Mode::Grid)
-        return option.rect.size().isValid() ? option.rect.size() : QSize(190, 128);
-    return QSize(option.rect.width(), 56);
+        return option.rect.size().isValid() ? option.rect.size() : QSize(172, 110);
+    return QSize(option.rect.width(), 44);
 }
 
 void ChannelDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
@@ -66,7 +66,7 @@ void ChannelDelegate::paintList(QPainter* painter, const QStyleOptionViewItem& o
     const QString logoUrl = index.data(ChannelListModel::LogoUrlRole).toString();
 
     // Logo
-    const QRect logoRect(r.left() + 12, r.top() + 10, 36, 36);
+    const QRect logoRect(r.left() + 10, r.top() + 2, 40, 40);
     QPixmap logo = LogoCache::instance()->cachedPixmap(logoUrl);
     if (!logoUrl.isEmpty() && !logo.isNull()) {
         QPainterPath clip;
@@ -86,27 +86,28 @@ void ChannelDelegate::paintList(QPainter* painter, const QStyleOptionViewItem& o
         painter->setPen(c.accent);
         QFont f = painter->font();
         f.setBold(true);
-        f.setPointSizeF(11);
+        f.setPointSizeF(11.5);
         painter->setFont(f);
         painter->drawText(logoRect, Qt::AlignCenter, firstLetter(name));
     }
 
     // Text
-    const int textLeft = logoRect.right() + 12;
+    const int textLeft = logoRect.right() + 10;
     const int textRight = r.right() - 44;
     QFont bold = painter->font();
     bold.setWeight(QFont::DemiBold);
+    bold.setPointSizeF(11);
     painter->setFont(bold);
     painter->setPen(selected ? c.accentHover : c.text);
-    painter->drawText(QRect(textLeft, r.top() + 8, textRight - textLeft, 20),
+    painter->drawText(QRect(textLeft, r.top() + 2, textRight - textLeft, 18),
                       Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(name, Qt::ElideRight, textRight - textLeft));
 
     QFont normal = painter->font();
-    normal.setWeight(QFont::Normal);
+    normal.setPointSizeF(9.5);
     painter->setFont(normal);
     painter->setPen(c.textDim);
-    painter->drawText(QRect(textLeft, r.top() + 30, textRight - textLeft, 16),
+    painter->drawText(QRect(textLeft, r.top() + 22, textRight - textLeft, 15),
                       Qt::AlignLeft | Qt::AlignVCenter,
                       painter->fontMetrics().elidedText(subtitle, Qt::ElideRight, textRight - textLeft));
 
@@ -157,7 +158,7 @@ void ChannelDelegate::paintGrid(QPainter* painter, const QStyleOptionViewItem& o
     const QString logoUrl = index.data(ChannelListModel::LogoUrlRole).toString();
 
     // Logo
-    const QRect logoRect(r.left() + (r.width() - 52) / 2, r.top() + 16, 52, 52);
+    const QRect logoRect(r.left() + (r.width() - 60) / 2, r.top() + 7, 60, 60);
     QPixmap logo = LogoCache::instance()->cachedPixmap(logoUrl);
     if (!logoUrl.isEmpty() && !logo.isNull()) {
         QPainterPath clip;
@@ -176,7 +177,7 @@ void ChannelDelegate::paintGrid(QPainter* painter, const QStyleOptionViewItem& o
         painter->setPen(c.accent);
         QFont f = painter->font();
         f.setBold(true);
-        f.setPointSizeF(14);
+        f.setPointSizeF(16);
         painter->setFont(f);
         painter->drawText(logoRect, Qt::AlignCenter, firstLetter(name));
     }
@@ -192,21 +193,22 @@ void ChannelDelegate::paintGrid(QPainter* painter, const QStyleOptionViewItem& o
     }
 
     // Name + subtitle
-    const int textW = r.width() - 20;
+    const int textW = r.width() - 16;
     QFont nameFont = painter->font();
     nameFont.setWeight(QFont::DemiBold);
+    nameFont.setPointSizeF(11.5);
     painter->setFont(nameFont);
     painter->setPen(c.text);
     const QString elidedName = painter->fontMetrics().elidedText(name, Qt::ElideRight, textW);
-    painter->drawText(QRect(r.left() + 10, r.bottom() - 44, textW, 18),
+    painter->drawText(QRect(r.left() + 8, r.bottom() - 36, textW, 18),
                       Qt::AlignHCenter | Qt::AlignVCenter, elidedName);
 
     QFont subFont = painter->font();
-    subFont.setPointSizeF(8.5);
+    subFont.setPointSizeF(9.5);
     painter->setFont(subFont);
     painter->setPen(c.textDim);
     const QString elidedSub = painter->fontMetrics().elidedText(subtitle, Qt::ElideRight, textW);
-    painter->drawText(QRect(r.left() + 10, r.bottom() - 24, textW, 16),
+    painter->drawText(QRect(r.left() + 8, r.bottom() - 17, textW, 14),
                       Qt::AlignHCenter | Qt::AlignVCenter, elidedSub);
 
     painter->restore();

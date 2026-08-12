@@ -103,8 +103,8 @@ void ChannelView::setGridMode(bool grid)
         m_list->setResizeMode(QListView::Adjust);
         m_list->setLayoutMode(QListView::Batched);
         m_list->setBatchSize(200);
-        m_list->setGridSize(QSize(190, 128));
-        m_list->setSpacing(6);
+        m_list->setGridSize(QSize(172, 110));
+        m_list->setSpacing(4);
     } else {
         m_list->setViewMode(QListView::ListMode);
         m_list->setMovement(QListView::Static);
@@ -123,8 +123,8 @@ void ChannelView::setHorizontalStrip(bool strip)
     m_list->setResizeMode(QListView::Adjust);
     m_list->setLayoutMode(QListView::Batched);
     m_list->setBatchSize(200);
-    m_list->setGridSize(QSize(164, 108));
-    m_list->setSpacing(8);
+    m_list->setGridSize(QSize(152, 106));
+    m_list->setSpacing(6);
     if (strip) {
         m_list->setFlow(QListView::LeftToRight);
         m_list->setWrapping(false);

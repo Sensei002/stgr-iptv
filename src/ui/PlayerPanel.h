@@ -26,9 +26,11 @@ class PlaybackController;
 //     favorite, fullscreen,
 //   * channel info header (logo, name, LIVE badge, EPG now/next).
 //
-// Fullscreen toggling reparents the video surface into a frameless top-level
-// frame. Reparenting recreates the native HWND, so the surface is re-attached
-// to the engine and the channel is restarted to render on the new window.
+// Fullscreen toggling moves the video surface's native window handle into a
+// frameless top-level frame with Win32 SetParent. The SAME HWND keeps
+// receiving frames, so no libVLC calls happen during the toggle - playback
+// never stops/restarts and the UI cannot deadlock. On non-Windows platforms
+// the surface widget is reparented instead.
 // ---------------------------------------------------------------------------
 class PlayerPanel : public QFrame
 {

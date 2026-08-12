@@ -11,6 +11,10 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#ifdef Q_OS_WIN
+#include <QtCore/qt_windows.h>
+#endif
+
 #include "core/Log.h"
 #include "playback/PlaybackController.h"
 #include "services/EpgManager.h"
@@ -115,6 +119,9 @@ void PlayerPanel::buildUi()
     m_videoSurface = new QWidget(this);
     m_videoSurface->setStyleSheet(QStringLiteral("background: #000000;"));
     m_videoSurface->setMinimumHeight(200);
+    // Safety net: if the OS gives the moved surface HWND keyboard focus in
+    // fullscreen, Escape must still exit fullscreen.
+    m_videoSurface->installEventFilter(this);
     m_controller->setVideoSurface(m_videoSurface);
 
     // Overlays stack (video + loading + error + reconnect banner).
@@ -478,13 +485,6 @@ void PlayerPanel::enterFullscreen()
     if (m_fullscreenActive || !m_videoSurface)
         return;
 
-    // Stop playback BEFORE reparenting: the reparent recreates the surface's
-    // HWND, and calling set_hwnd while playing (then immediately stopping)
-    // races with the vout and can freeze the UI thread. Stopping first tears
-    // the vout down cleanly on the old HWND; we re-attach the new HWND and
-    // restart below.
-    m_controller->stop();
-
     if (!m_fullscreenFrame) {
         m_fullscreenFrame = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
         m_fullscreenFrame->setStyleSheet(QStringLiteral("background: #000000;"));
@@ -502,20 +502,37 @@ void PlayerPanel::enterFullscreen()
         m_fullscreenLoading->hide();
     }
 
+    // Let Qt stop managing the surface geometry. The surface stays a Qt child
+    // of the container - only its native HWND moves to the fullscreen frame.
     m_overlayLayout->removeWidget(m_videoSurface);
+
+#ifdef Q_OS_WIN
+    // Real fix: reparent the NATIVE window handle into the fullscreen frame.
+    // libVLC keeps rendering into the SAME HWND, so there is no stop/restart,
+    // no set_hwnd and no vout recreation - those race with libVLC's D3D11
+    // output and freeze the UI thread. The Qt parent is left untouched, so Qt
+    // never recreates the HWND.
+    m_fullscreenFrame->showFullScreen();
+    const HWND frameHwnd = reinterpret_cast<HWND>(m_fullscreenFrame->winId());
+    const HWND surfaceHwnd = reinterpret_cast<HWND>(m_videoSurface->winId());
+    SetParent(surfaceHwnd, frameHwnd);
+    RECT rc;
+    GetClientRect(frameHwnd, &rc);
+    SetWindowPos(surfaceHwnd, HWND_TOP, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
+    m_fullscreenFrame->raise();
+    m_fullscreenFrame->activateWindow();
+    m_fullscreenFrame->setFocus();
+#else
     m_videoSurface->setParent(m_fullscreenFrame);
     m_fullscreenFrame->layout()->addWidget(m_videoSurface);
     m_fullscreenFrame->showFullScreen();
     m_fullscreenFrame->raise();
+    m_videoSurface->setFocus();
+#endif
+
     m_fullscreenLoading->setGeometry(m_fullscreenFrame->rect());
     m_fullscreenLoading->raise();
-    m_videoSurface->setFocus();
 
-    // Reparenting recreates the surface's native HWND; re-attach and restart
-    // the channel so the video output initializes on the new window (otherwise
-    // audio keeps playing into a black screen).
-    m_controller->setVideoSurface(m_videoSurface);
-    m_controller->reload();
     m_fullscreenActive = true;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().accent, 20));
 }
@@ -525,34 +542,58 @@ void PlayerPanel::exitFullscreen()
     if (!m_fullscreenActive)
         return;
 
-    // Same as enterFullscreen: stop before the HWND changes.
-    m_controller->stop();
-
-    m_videoSurface->setParent(m_videoContainer);
-    m_overlayLayout->insertWidget(0, m_videoSurface); // keep the video below the overlays
-    m_overlayLayout->setCurrentWidget(m_videoSurface);
-
+#ifdef Q_OS_WIN
+    const HWND containerHwnd = reinterpret_cast<HWND>(m_videoContainer->winId());
+    const HWND surfaceHwnd = reinterpret_cast<HWND>(m_videoSurface->winId());
+    SetParent(surfaceHwnd, containerHwnd);
+    RECT rc;
+    GetClientRect(containerHwnd, &rc);
+    // HWND_BOTTOM keeps the video below the loading/error/reconnect overlays.
+    SetWindowPos(surfaceHwnd, HWND_BOTTOM, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
     m_fullscreenFrame->hide();
-    // The surface's HWND changed again when moving back - re-attach and
-    // restart so video renders in the in-window surface.
-    m_controller->setVideoSurface(m_videoSurface);
-    m_controller->reload();
+#else
+    m_videoSurface->setParent(m_videoContainer);
+    m_fullscreenFrame->hide();
+#endif
+
+    // Hand the surface geometry back to Qt's layout, keeping the overlays on top.
+    m_overlayLayout->insertWidget(0, m_videoSurface);
+    m_reconnectPage->raise();
+    m_loadingPage->raise();
+    m_errorPage->raise();
+
     m_fullscreenActive = false;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().text, 20));
 }
 
 bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
 {
+    // Escape exits fullscreen whether the focus lands on the frame or on the
+    // native video surface (both can receive keys after the HWND moves).
+    if (event->type() == QEvent::KeyPress
+        && (watched == m_fullscreenFrame || watched == m_videoSurface)) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Escape && m_fullscreenActive) {
+            exitFullscreen();
+            return true;
+        }
+    }
+
     if (watched == m_fullscreenFrame) {
-        if (event->type() == QEvent::Resize && m_fullscreenLoading) {
-            m_fullscreenLoading->setGeometry(m_fullscreenFrame->rect());
-            m_fullscreenLoading->raise();
-        } else if (event->type() == QEvent::KeyPress) {
-            auto* keyEvent = static_cast<QKeyEvent*>(event);
-            if (keyEvent->key() == Qt::Key_Escape) {
-                exitFullscreen();
-                return true;
+        if (event->type() == QEvent::Resize) {
+            if (m_fullscreenLoading) {
+                m_fullscreenLoading->setGeometry(m_fullscreenFrame->rect());
+                m_fullscreenLoading->raise();
             }
+#ifdef Q_OS_WIN
+            // Keep the native video surface filling the frame.
+            if (m_fullscreenActive && m_videoSurface) {
+                RECT rc;
+                GetClientRect(reinterpret_cast<HWND>(m_fullscreenFrame->winId()), &rc);
+                SetWindowPos(reinterpret_cast<HWND>(m_videoSurface->winId()), HWND_TOP,
+                             0, 0, rc.right, rc.bottom, 0);
+            }
+#endif
         }
     }
     return QFrame::eventFilter(watched, event);

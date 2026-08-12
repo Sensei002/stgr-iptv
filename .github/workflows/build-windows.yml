@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  # Needed to auto-create the release tag + GitHub Release when the version
+  # in CMakeLists.txt is bumped on main.
+  contents: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -148,6 +153,52 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error
+
+      - name: Publish release (main only, on version bump)
+        # Single workflow: every push builds + tests + packages; a push that
+        # bumps the version in CMakeLists.txt also auto-tags vX.Y.Z and
+        # publishes the GitHub Release. The auto-created tag does not re-run
+        # this workflow (it only triggers on branch pushes).
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $tags = Invoke-RestMethod -Headers $headers -UserAgent "stgr" `
+            -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/tags?per_page=100"
+          $latest = $tags | ForEach-Object { $_.name } |
+            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            ForEach-Object { [pscustomobject]@{ Name = $_; Ver = [version]($_ -replace '^v', '') } } |
+            Sort-Object Ver -Descending | Select-Object -First 1
+
+          if ($latest -and ([version]$version -le $latest.Ver)) {
+            Write-Host "Version $version is not newer than tag $($latest.Name) - skipping release. Bump CMakeLists.txt to publish."
+            exit 0
+          }
+
+          Write-Host "Publishing STGR IpTV v$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$version" -m "STGR IpTV $version"
+          git push origin "v$version" 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            # Tag already exists upstream (a concurrent run may have won the
+            # race). If its release is published too, there is nothing to do.
+            if (gh release view "v$version" --json tagName --jq .tagName 2>$null) {
+              Write-Host "Release v$version already published - nothing to do."
+              exit 0
+            }
+            Write-Host "Tag v$version exists upstream - publishing the release from it."
+          }
+          gh release create "v$version" `
+            "dist/STGR-IpTV-Setup-v$version-x64.exe" `
+            "dist/STGR-IpTV-v$version-x64-portable.zip" `
+            "dist/SHA256SUMS.txt" `
+            --title "STGR IpTV $version" `
+            --generate-notes
+          Write-Host "Release v$version published."
 
       - name: Upload portable staging (debugging aid)
         uses: actions/upload-artifact@v4
