@@ -32,6 +32,7 @@
 #include "settings/Settings.h"
 #include "ui/Theme.h"
 #include "ui/MiniPlayerWindow.h"
+#include "ui/PlayerPanel.h"
 #include "ui/dialogs/FirstRunDialog.h"
 #include "ui/dialogs/PlaylistDialog.h"
 #include "ui/dialogs/UpdateDialog.h"

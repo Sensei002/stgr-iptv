@@ -39,7 +39,7 @@ protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
-    QWidget* buildSectionTitle(const QString& text);
+    QLabel* buildSectionTitle(const QString& text);
     void rebuildChips();
     // Paints the subtle dojo decoration (seigaiha wave field + faint enso
     // rings) behind the page content. Rendered once per size into a cached

@@ -107,7 +107,7 @@ HomePage::HomePage(QWidget* parent)
     rebuildChips();
 }
 
-QWidget* HomePage::buildSectionTitle(const QString& text)
+QLabel* HomePage::buildSectionTitle(const QString& text)
 {
     auto* label = new QLabel(text, this);
     label->setProperty("stgrClass", QStringLiteral("sectionTitle"));

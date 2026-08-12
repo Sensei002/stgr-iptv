@@ -197,11 +197,11 @@ QIcon drawIcon(const QString& name, const QColor& color, int size)
         p.drawLine(pt(9, 2.5), pt(15, 2.5));
     } else if (name == QLatin1String("star") || name == QLatin1String("star-outline")) {
         QPainterPath path;
-        const QPointF c = pt(12, 13);
+        const QPointF center = pt(12, 13);
         for (int i = 0; i < 10; ++i) {
             const qreal r = (i % 2 == 0) ? s * 0.42 : s * 0.19;
             const qreal a = -kPi / 2.0 + i * kPi / 5.0;
-            const QPointF pnt(c.x() + r * qCos(a), c.y() + r * qSin(a));
+            const QPointF pnt(center.x() + r * qCos(a), center.y() + r * qSin(a));
             if (i == 0) path.moveTo(pnt); else path.lineTo(pnt);
         }
         path.closeSubpath();

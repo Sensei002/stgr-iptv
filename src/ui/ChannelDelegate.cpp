@@ -23,6 +23,7 @@ ChannelDelegate::ChannelDelegate(QObject* parent)
 
 QSize ChannelDelegate::sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const
 {
+    Q_UNUSED(index);
     if (m_mode == Mode::Grid)
         return option.rect.size().isValid() ? option.rect.size() : QSize(190, 128);
     return QSize(option.rect.width(), 56);
