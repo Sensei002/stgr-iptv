@@ -101,6 +101,7 @@ target_link_libraries(stgr_playback PUBLIC
     stgr_services
     Qt6::Core
     Qt6::Gui
+    Qt6::Widgets
     ${STGR_PLAYBACK_LIBS}
 )
 
