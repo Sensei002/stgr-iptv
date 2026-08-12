@@ -109,7 +109,7 @@ jobs:
           QT_ROOT: ${{ env.QT_ROOT_DIR }}
         run: |
           powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1 `
-            -AppExe "build/ci-windows/Release/STGR-IpTV.exe" `
+            -AppExe "build/ci-windows/src/Release/STGR-IpTV.exe" `
             -QtBin "$env:QT_ROOT/bin" `
             -VlcDir "$env:VLC_DIR" `
             -Version "$env:RELEASE_VERSION" `
