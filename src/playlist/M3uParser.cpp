@@ -75,11 +75,13 @@ M3uParser::Result M3uParser::parse(const QByteArray& data,
 
     QHash<QString, QString> pendingAttrs;
     QString pendingGroup;
+    bool pendingEntry = false;
     QSet<QString> seenUrls;
 
-    const auto flushPending = [&pendingAttrs, &pendingGroup]() {
+    const auto flushPending = [&pendingAttrs, &pendingGroup, &pendingEntry]() {
         pendingAttrs.clear();
         pendingGroup.clear();
+        pendingEntry = false;
     };
 
     for (const QString& rawLine : lines) {
@@ -126,6 +128,7 @@ M3uParser::Result M3uParser::parse(const QByteArray& data,
             if (!title.isEmpty())
                 pendingAttrs.insert(QStringLiteral("_title"),
                                     StringUtils::stripQuotes(StringUtils::clean(title)));
+            pendingEntry = true;
             continue;
         }
 
@@ -146,7 +149,7 @@ M3uParser::Result M3uParser::parse(const QByteArray& data,
             continue;
         }
 
-        if (!UrlUtils::isSupportedStreamUrl(cleaned)) {
+        if (!UrlUtils::isSupportedStreamUrl(cleaned, baseUrl)) {
             ++result.warnings;
             flushPending();
             continue;
@@ -200,6 +203,10 @@ M3uParser::Result M3uParser::parse(const QByteArray& data,
             break;
         }
     }
+
+    // A trailing #EXTINF with no stream URL after it is an orphaned entry.
+    if (pendingEntry)
+        ++result.warnings;
 
     // Assign stable position numbers to channels without tvg-chno.
     for (int i = 0; i < result.channels.size(); ++i) {

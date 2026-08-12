@@ -18,7 +18,32 @@ static const QStringList kSupportedSchemes = {
     QStringLiteral("file"),
 };
 
-bool isSupportedStreamUrl(const QString& raw)
+namespace {
+
+// Returns the explicit scheme prefix of a URL string, lower-cased, or an
+// empty string when there is none.
+//
+// QUrl::fromUserInput() is deliberately NOT used here: it fabricates a
+// scheme for arbitrary input ("garbage-no-scheme" becomes http://garbage...,
+// "some text" becomes a file: URL), which would let malformed playlist lines
+// straight through the protocol whitelist.
+QString extractScheme(const QString& cleaned)
+{
+    const int colon = cleaned.indexOf(QLatin1Char(':'));
+    if (colon <= 0)
+        return QString();
+
+    const QString candidate = cleaned.left(colon);
+    // A ':' inside a path or text ("C:\dir", "foo bar:baz") is not a scheme.
+    if (candidate.contains(QLatin1Char('/')) || candidate.contains(QLatin1Char(' ')))
+        return QString();
+
+    return candidate.toLower();
+}
+
+} // namespace
+
+bool isSupportedStreamUrl(const QString& raw, const QUrl& base)
 {
     const QString cleaned = sanitize(raw);
     if (cleaned.isEmpty())
@@ -28,20 +53,21 @@ bool isSupportedStreamUrl(const QString& raw)
     if (QFileInfo::exists(cleaned))
         return true;
 
-    const QUrl url = QUrl::fromUserInput(cleaned);
-    const QString scheme = url.scheme().toLower();
-    if (scheme.isEmpty()) {
-        // Relative reference - only meaningful when a playlist base resolves it.
-        return !cleaned.startsWith(QLatin1String("//"))
-            && !cleaned.startsWith(QLatin1Char('/'));
-    }
-    return kSupportedSchemes.contains(scheme);
+    const QString scheme = extractScheme(cleaned);
+    if (!scheme.isEmpty())
+        return kSupportedSchemes.contains(scheme);
+
+    // No explicit scheme: a relative reference. Only meaningful when a
+    // playlist base URL can resolve it into an absolute stream URL.
+    if (base.isEmpty())
+        return false;
+    return !cleaned.startsWith(QLatin1String("//"))
+        && !cleaned.startsWith(QLatin1Char('/'));
 }
 
 bool isHttpUrl(const QString& raw)
 {
-    const QUrl url = QUrl::fromUserInput(sanitize(raw));
-    const QString scheme = url.scheme().toLower();
+    const QString scheme = extractScheme(sanitize(raw));
     return scheme == QLatin1String("http") || scheme == QLatin1String("https");
 }
 
@@ -73,11 +99,14 @@ QUrl resolveAgainst(const QString& raw, const QUrl& base)
     if (cleaned.isEmpty())
         return {};
 
-    QUrl url = QUrl::fromUserInput(cleaned);
-    if (url.scheme().isEmpty() && !base.isEmpty()) {
-        url = base.resolved(url);
-    }
-    return url;
+    // An explicit scheme means the URL is absolute and self-contained.
+    if (!extractScheme(cleaned).isEmpty())
+        return QUrl(cleaned);
+
+    // Relative reference - resolve against the playlist base.
+    if (base.isEmpty())
+        return {};
+    return base.resolved(QUrl(cleaned));
 }
 
 QString redact(const QString& url)

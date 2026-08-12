@@ -28,13 +28,19 @@ private slots:
     void persistsAcrossRestart();
     void survivesReorder();
     void removeAndClear();
+
+private:
+    QTemporaryDir m_dir; // outlives every test body, like tst_playlistmanager
 };
 
 void FavoritesStoreTest::init()
 {
-    QTemporaryDir dir;
-    QVERIFY(dir.isValid());
-    AppPaths::setAppDataDirOverride(dir.path());
+    // A local QTemporaryDir here would be destroyed when init() returns,
+    // deleting the storage the test bodies write to.
+    if (!m_dir.isValid())
+        m_dir = QTemporaryDir();
+    QVERIFY(m_dir.isValid());
+    AppPaths::setAppDataDirOverride(m_dir.path());
     QVERIFY(AppPaths::ensureDirs());
 
     FavoritesStore* store = FavoritesStore::instance();

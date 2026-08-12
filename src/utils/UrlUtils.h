@@ -14,7 +14,9 @@
 namespace UrlUtils {
 
 // True when the URL uses one of the supported streaming protocols.
-bool isSupportedStreamUrl(const QString& raw);
+// Relative references (no explicit scheme) are only accepted when a playlist
+// base URL is available to resolve them into absolute stream URLs.
+bool isSupportedStreamUrl(const QString& raw, const QUrl& base = QUrl());
 
 // True when the URL is an http/https resource.
 bool isHttpUrl(const QString& raw);
