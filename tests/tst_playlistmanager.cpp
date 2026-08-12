@@ -193,9 +193,13 @@ void PlaylistManagerTest::importLocalFileCopiesAndRegisters()
     PlaylistManager manager(&m_source);
     manager.load();
     QVERIFY(manager.importLocalFile(sourceFile));
-    QCOMPARE(manager.playlists().size(), 1);
 
-    const Playlist& p = manager.playlists().first();
+    // playlists() returns a copy - take a stable one before binding refs
+    // (a ref into the temporary would dangle at the end of the statement).
+    const QVector<Playlist> ps = manager.playlists();
+    QCOMPARE(ps.size(), 1);
+
+    const Playlist& p = ps.first();
     QVERIFY(p.isLocal());
     QVERIFY(QFileInfo::exists(p.url));
     QCOMPARE(QFileInfo(p.url).fileName(), QStringLiteral("my-list.m3u"));
