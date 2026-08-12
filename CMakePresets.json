@@ -1,0 +1,82 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "ci-windows",
+      "displayName": "CI Windows x64 (Release)",
+      "description": "Production build used by GitHub Actions: MSVC x64, Qt from aqtinstall (QT_ROOT), libVLC SDK from VLC_DIR.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build/ci-windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT}",
+        "VLC_DIR": "$env{VLC_DIR}",
+        "STGR_REQUIRE_VLC": "ON",
+        "STGR_BUILD_TESTS": "ON",
+        "STGR_ENABLE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "windows-dev",
+      "displayName": "Windows x64 (Dev)",
+      "description": "Local development build. Point QT_ROOT and VLC_DIR at your own Qt and VLC SDK installations.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT}",
+        "VLC_DIR": "$env{VLC_DIR}",
+        "STGR_REQUIRE_VLC": "ON",
+        "STGR_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-vcpkg",
+      "displayName": "Windows x64 via vcpkg",
+      "description": "Alternative developer path that resolves Qt through a vcpkg manifest (see vcpkg.json). Set VCPKG_ROOT and VLC_DIR first.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "binaryDir": "${sourceDir}/build/vcpkg",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VLC_DIR": "$env{VLC_DIR}",
+        "STGR_REQUIRE_VLC": "ON",
+        "STGR_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ci-windows",
+      "configurePreset": "ci-windows",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "ci-windows",
+      "configurePreset": "ci-windows",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

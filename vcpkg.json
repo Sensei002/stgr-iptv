@@ -1,0 +1,9 @@
+{
+  "name": "stgr-iptv",
+  "version-string": "1.0.0",
+  "description": "STGR IpTV - a lightweight Windows live TV player (M3U/M3U8) by STEiGER Dojo",
+  "dependencies": [
+    "qtbase",
+    "qtsvg"
+  ]
+}

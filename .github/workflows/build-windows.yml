@@ -1,0 +1,102 @@
+name: CI - Windows x64
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test & package (x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      QT_VERSION: 6.8.2
+      VLC_VERSION: 3.0.21
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt (aqtinstall, official binaries)
+        id: install-qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtsvg
+          cache: true
+
+      - name: Download libVLC SDK (pinned release from VideoLAN)
+        shell: pwsh
+        run: |
+          $url = "https://get.videolan.org/vlc/$env:VLC_VERSION/win64/vlc-$env:VLC_VERSION-win64.7z"
+          $archive = Join-Path $env:RUNNER_TEMP "vlc.7z"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) { throw "7-Zip not found on runner" }
+          & $sevenZip x $archive "-o$env:RUNNER_TEMP\vlc" -y
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract VLC archive" }
+          $root = Get-ChildItem "$env:RUNNER_TEMP\vlc" -Directory | Select-Object -First 1
+          "VLC_DIR=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $env:QT_ROOT = "${{ steps.install-qt.outputs.qtpath }}"
+          cmake --preset ci-windows
+
+      - name: Build (Release x64)
+        shell: pwsh
+        run: cmake --build --preset ci-windows --config Release
+
+      - name: Run unit tests
+        shell: pwsh
+        run: ctest --preset ci-windows -C Release --output-on-failure
+
+      - name: Package application (portable ZIP + installer + checksums)
+        shell: pwsh
+        env:
+          QT_ROOT: ${{ steps.install-qt.outputs.qtpath }}
+        run: |
+          powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1 `
+            -AppExe "build/ci-windows/Release/STGR-IpTV.exe" `
+            -QtBin "$env:QT_ROOT/bin" `
+            -VlcDir "$env:VLC_DIR" `
+            -Version "1.0.0" `
+            -OutDir "dist"
+
+      - name: Verify packaged artifacts
+        shell: pwsh
+        run: |
+          $required = @("dist/staging/STGR-IpTV.exe", "dist/staging/libvlc.dll", "dist/staging/libvlccore.dll", "dist/staging/plugins")
+          foreach ($r in $required) {
+            if (-not (Test-Path $r)) { throw "Missing packaged file: $r" }
+          }
+          $exe = Get-Item "dist/staging/STGR-IpTV.exe"
+          if ($exe.Length -lt 1MB) { throw "Suspiciously small executable" }
+          if (-not (Test-Path "dist/SHA256SUMS.txt")) { throw "Missing checksums" }
+          Write-Host "Packaging verified: exe $($exe.Length) bytes"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-artifacts
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Upload portable staging (debugging aid)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-x64-staging
+          path: dist/staging

@@ -1,0 +1,46 @@
+# --- Build outputs ---
+/build*/
+/out/
+/cmake-build-*/
+
+# --- CMake ---
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.ncb
+*.user
+compile_commands.json
+
+# --- vcpkg (optional local usage) ---
+/vcpkg/
+/vcpkg_installed/
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*~
+.DS_Store
+
+# --- Runtime / user data (never commit) ---
+*.log
+logs/
+
+# --- Installer staging ---
+/staging/
+/dist/
+*.7z
+*.zip
+!installer/*.iss
+
+# --- Misc ---
+*.tmp
+Thumbs.db

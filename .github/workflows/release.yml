@@ -1,0 +1,123 @@
+name: Release - Windows x64
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, sign & publish release
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      QT_VERSION: 6.8.2
+      VLC_VERSION: 3.0.21
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Releasing version: $version"
+
+      - name: Install Qt (aqtinstall, official binaries)
+        id: install-qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtsvg
+          cache: true
+
+      - name: Download libVLC SDK (pinned release from VideoLAN)
+        shell: pwsh
+        run: |
+          $url = "https://get.videolan.org/vlc/$env:VLC_VERSION/win64/vlc-$env:VLC_VERSION-win64.7z"
+          $archive = Join-Path $env:RUNNER_TEMP "vlc.7z"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          & "C:\Program Files\7-Zip\7z.exe" x $archive "-o$env:RUNNER_TEMP\vlc" -y
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract VLC archive" }
+          $root = Get-ChildItem "$env:RUNNER_TEMP\vlc" -Directory | Select-Object -First 1
+          "VLC_DIR=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $env:QT_ROOT = "${{ steps.install-qt.outputs.qtpath }}"
+          cmake --preset ci-windows
+
+      - name: Build (Release x64)
+        shell: pwsh
+        run: cmake --build --preset ci-windows --config Release
+
+      - name: Run unit tests
+        shell: pwsh
+        run: ctest --preset ci-windows -C Release --output-on-failure
+
+      - name: Package application
+        shell: pwsh
+        env:
+          QT_ROOT: ${{ steps.install-qt.outputs.qtpath }}
+        run: |
+          powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1 `
+            -AppExe "build/ci-windows/Release/STGR-IpTV.exe" `
+            -QtBin "$env:QT_ROOT/bin" `
+            -VlcDir "$env:VLC_DIR" `
+            -Version "$env:RELEASE_VERSION" `
+            -OutDir "dist"
+
+      - name: Sign artifacts (only when secrets are configured)
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.CODE_SIGNING_CERT_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.CODE_SIGNING_PASSWORD }}
+        run: |
+          if (-not $env:PFX_BASE64) {
+            Write-Host "No CODE_SIGNING_CERT_BASE64 secret - building unsigned release (see docs/CODE-SIGNING.md)."
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "code-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+          $targets = @()
+          $targets += Get-ChildItem "dist" -Filter "STGR-IpTV-Setup-*.exe"
+          $targets += Get-Item "dist/staging/STGR-IpTV.exe"
+          foreach ($t in $targets) {
+            & signtool sign /fd SHA256 /f $pfx /p $env:PFX_PASSWORD /t http://timestamp.digicert.com $t.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($t.FullName)" }
+          }
+          Write-Host "Artifacts signed."
+
+      - name: Recompute checksums after signing
+        shell: pwsh
+        run: |
+          $files = @()
+          $files += Get-ChildItem "dist" -Filter "STGR-IpTV-Setup-*.exe"
+          $files += Get-ChildItem "dist" -Filter "*.zip"
+          $lines = foreach ($f in $files) {
+            "{0}  {1}" -f (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower(), $f.Name
+          }
+          $lines | Set-Content "dist/SHA256SUMS.txt" -Encoding ascii
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "STGR IpTV ${{ steps.version.outputs.version }}"
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/STGR-IpTV-Setup-*.exe
+            dist/STGR-IpTV-*-portable.zip
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
