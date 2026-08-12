@@ -67,7 +67,11 @@ if (-not $InnoPath) {
 }
 if ($InnoPath) {
     Write-Host "[package] building installer with Inno Setup"
-    & $InnoPath "/dAppVersion=$Version" "/dAppSourceDir=$Staging" "/o$OutDir" (Join-Path $repoRoot "installer\STGR-IpTV.iss")
+    # Inno resolves relative paths against the .iss directory (not the CWD),
+    # so always hand it absolute paths.
+    $absStaging = (Resolve-Path $Staging).Path
+    $absOutDir = (Resolve-Path $OutDir).Path
+    & $InnoPath "/dAppVersion=$Version" "/dAppSourceDir=$absStaging" "/o$absOutDir" (Join-Path $repoRoot "installer\STGR-IpTV.iss")
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
 } else {
     Write-Warning "[package] Inno Setup not found - installer skipped"
