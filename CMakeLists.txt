@@ -27,9 +27,9 @@ option(STGR_BUILD_TESTS "Build the unit test suite" ON)
 option(STGR_ENABLE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 
 # ---------------------------------------------------------------------------
-# Qt 6 (Widgets, Network, Svg, Concurrent)
+# Qt 6 (Widgets, Network, Svg, Concurrent, Test)
 # ---------------------------------------------------------------------------
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Svg Concurrent)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Network Svg Concurrent Test)
 
 # ---------------------------------------------------------------------------
 # libVLC SDK (optional at configure time; required for playback in production)
