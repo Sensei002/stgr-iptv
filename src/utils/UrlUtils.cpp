@@ -60,7 +60,8 @@ QString sanitize(QString raw)
     QString out;
     out.reserve(raw.size());
     for (const QChar& c : raw) {
-        if (!c.isControl())
+        // QChar::isControl() was removed in Qt 6 - use the Unicode category.
+        if (c.category() != QChar::Other_Control)
             out.append(c);
     }
     return out.trimmed();

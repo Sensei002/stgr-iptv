@@ -3,10 +3,13 @@
 # ---------------------------------------------------------------------------
 
 # Shared configuration header generated from CMake (version, branding).
+# Sources include it as "core/version.h" (the src/ root is on the include
+# path), so generate it under a core/ subdirectory of the build tree.
 set(STGR_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${STGR_GENERATED_DIR}/core")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/core/version.h.in"
-    "${STGR_GENERATED_DIR}/version.h"
+    "${STGR_GENERATED_DIR}/core/version.h"
     @ONLY
 )
 
