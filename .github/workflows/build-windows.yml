@@ -95,6 +95,23 @@ jobs:
         shell: pwsh
         run: ctest --preset ci-windows -C Release --output-on-failure
 
+      - name: Read project version
+        id: version
+        shell: pwsh
+        run: |
+          # Single source of truth: the release tag must match this version so
+          # the packaged filenames line up with the tag when publishing.
+          $raw = Get-Content CMakeLists.txt -Raw
+          # Anchor to the project() block so earlier 3-part versions (e.g. a
+          # future find_package(Qt6 6.8.2)) can't win the match.
+          if ($raw -match '(?s)project\(STGR_IpTV.*?VERSION\s+(\d+\.\d+\.\d+)') {
+            $v = $matches[1]
+          } else {
+            $v = "1.0.0"
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Project version: $v"
+
       - name: Package application (portable ZIP + installer + checksums)
         shell: pwsh
         env:
@@ -104,7 +121,7 @@ jobs:
             -AppExe "build/ci-windows/src/Release/STGR-IpTV.exe" `
             -QtBin "$env:QT_ROOT/bin" `
             -VlcDir "$env:VLC_DIR" `
-            -Version "1.0.0" `
+            -Version "${{ steps.version.outputs.version }}" `
             -OutDir "dist"
 
       - name: Verify packaged artifacts

@@ -478,6 +478,13 @@ void PlayerPanel::enterFullscreen()
     if (m_fullscreenActive || !m_videoSurface)
         return;
 
+    // Stop playback BEFORE reparenting: the reparent recreates the surface's
+    // HWND, and calling set_hwnd while playing (then immediately stopping)
+    // races with the vout and can freeze the UI thread. Stopping first tears
+    // the vout down cleanly on the old HWND; we re-attach the new HWND and
+    // restart below.
+    m_controller->stop();
+
     if (!m_fullscreenFrame) {
         m_fullscreenFrame = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
         m_fullscreenFrame->setStyleSheet(QStringLiteral("background: #000000;"));
@@ -517,6 +524,9 @@ void PlayerPanel::exitFullscreen()
 {
     if (!m_fullscreenActive)
         return;
+
+    // Same as enterFullscreen: stop before the HWND changes.
+    m_controller->stop();
 
     m_videoSurface->setParent(m_videoContainer);
     m_overlayLayout->insertWidget(0, m_videoSurface); // keep the video below the overlays

@@ -1,5 +1,15 @@
 name: Release - Windows x64
 
+# Publish-only workflow: reuses the packaged artifacts produced by the CI
+# build (build-windows.yml) for the tagged commit - no rebuild happens here.
+#
+# Flow:  push commit -> CI builds/tests/packages (uploads artifact)
+#        -> push tag vX.Y.Z -> this workflow downloads the artifact and
+#        publishes the release.
+#
+# The tag version MUST match the project version in CMakeLists.txt, because
+# the CI build names the packaged files after that version.
+
 on:
   push:
     tags:
@@ -7,16 +17,13 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
-  release:
-    name: Build, sign & publish release
+  publish:
+    name: Publish release (reuses CI build)
     runs-on: windows-latest
-    timeout-minutes: 60
-
-    env:
-      QT_VERSION: 6.8.2
-      VLC_VERSION: 3.0.21
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -32,88 +39,51 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Releasing version: $version"
 
-      - name: Install Qt (aqtinstall, official binaries)
-        id: install-qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          arch: win64_msvc2022_64
-          # QtSvg is part of the base Qt 6 desktop archive - do NOT pass it as
-          # a module (aqtinstall has no standalone qtsvg module for Qt 6).
-          cache: true
-
-      - name: Download libVLC SDK (pinned release from VideoLAN)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $url = "https://get.videolan.org/vlc/$env:VLC_VERSION/win64/vlc-$env:VLC_VERSION-win64.7z"
-          $archive = Join-Path $env:RUNNER_TEMP "vlc.7z"
-
-          Write-Host "Downloading $url"
-          # curl.exe follows the get.videolan.org mirror redirect and retries;
-          # Invoke-WebRequest has been observed to save a small HTML page here.
-          & curl.exe -L --fail --retry 3 --retry-delay 2 -o $archive $url
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "curl failed (exit $LASTEXITCODE) - falling back to Invoke-WebRequest"
-            Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10
-          }
-          if (-not (Test-Path $archive)) { throw "Archive was not written to $archive" }
-          $size = (Get-Item $archive).Length
-          Write-Host "Downloaded $size bytes"
-          if ($size -lt 10MB) { throw "Downloaded file is too small ($size bytes) - expected the ~38 MB VLC archive" }
-          $sig = [System.IO.File]::ReadAllBytes($archive)[0..5]
-          if (($sig -join ',') -ne '55,122,188,175,39,28') { throw "Downloaded file is not a 7z archive" }
-
-          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
-          if (-not (Test-Path $sevenZip)) {
-            $cmd = Get-Command 7z -ErrorAction SilentlyContinue
-            if ($cmd) { $sevenZip = $cmd.Source } else { throw "7-Zip not found on runner" }
-          }
-          Write-Host "7-Zip: $sevenZip"
-
-          $extractDir = Join-Path $env:RUNNER_TEMP "vlc"
-          & $sevenZip x $archive "-o$extractDir" -y | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "Failed to extract VLC archive (exit $LASTEXITCODE)" }
-
-          # The SDK root is the directory that CONTAINS sdk/include/vlc/vlc.h.
-          # Check the extraction root itself first, then its subdirectories.
-          $sdkRoot = @(Get-Item $extractDir) + @(Get-ChildItem $extractDir -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue) |
-            Where-Object { Test-Path (Join-Path $_.FullName "sdk\include\vlc\vlc.h") } |
-            Select-Object -First 1
-          if (-not $sdkRoot) {
-            Write-Host "VLC SDK not found after extraction. Extracted tree:"
-            Get-ChildItem $extractDir -Recurse -Depth 2 | ForEach-Object { $_.FullName }
-            throw "VLC SDK (sdk/include/vlc/vlc.h) not found after extraction"
-          }
-          "VLC_DIR=$($sdkRoot.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "VLC_DIR=$($sdkRoot.FullName)"
-
-      - name: Configure CMake
-        shell: pwsh
-        run: |
-          # install-qt-action v4 exports QT_ROOT_DIR (it has no action outputs).
-          $env:QT_ROOT = $env:QT_ROOT_DIR
-          cmake --preset ci-windows
-
-      - name: Build (Release x64)
-        shell: pwsh
-        run: cmake --build --preset ci-windows --config Release
-
-      - name: Run unit tests
-        shell: pwsh
-        run: ctest --preset ci-windows -C Release --output-on-failure
-
-      - name: Package application
+      - name: Locate CI build for this commit
+        id: find-run
         shell: pwsh
         env:
-          QT_ROOT: ${{ env.QT_ROOT_DIR }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1 `
-            -AppExe "build/ci-windows/src/Release/STGR-IpTV.exe" `
-            -QtBin "$env:QT_ROOT/bin" `
-            -VlcDir "$env:VLC_DIR" `
-            -Version "$env:RELEASE_VERSION" `
-            -OutDir "dist"
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs?head_sha=$env:GITHUB_SHA&event=push&status=success&per_page=100"
+          $runs = Invoke-RestMethod -Headers $headers -Uri $uri -UserAgent "stgr"
+          $build = $runs.workflow_runs | Where-Object {
+            $_.path -eq ".github/workflows/build-windows.yml" -and $_.head_branch -eq "main"
+          } | Select-Object -First 1
+          if (-not $build) {
+            Write-Host "::error::No successful CI build found for commit $env:GITHUB_SHA."
+            Write-Host "::error::Push the commit to main (so CI packages it) before tagging."
+            exit 1
+          }
+          "run_id=$($build.id)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Using CI build run $($build.id) (commit $env:GITHUB_SHA)"
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x64-artifacts
+          run-id: ${{ steps.find-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist
+
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          Write-Host "Artifacts in dist:"
+          Get-ChildItem dist | Format-Table Name, Length
+          $available = (Get-ChildItem dist -File | ForEach-Object { $_.Name }) -join ', '
+          $required = @(
+            "dist/STGR-IpTV-Setup-v$env:RELEASE_VERSION-x64.exe",
+            "dist/STGR-IpTV-v$env:RELEASE_VERSION-x64-portable.zip",
+            "dist/SHA256SUMS.txt"
+          )
+          foreach ($r in $required) {
+            if (-not (Test-Path $r)) {
+              throw "Missing packaged file: $r (found: $available) - did you bump CMakeLists.txt to $env:RELEASE_VERSION before tagging?"
+            }
+          }
+          Write-Host "Release artifacts verified for v$env:RELEASE_VERSION."
 
       - name: Sign artifacts (only when secrets are configured)
         shell: pwsh
@@ -122,17 +92,31 @@ jobs:
           PFX_PASSWORD: ${{ secrets.CODE_SIGNING_PASSWORD }}
         run: |
           if (-not $env:PFX_BASE64) {
-            Write-Host "No CODE_SIGNING_CERT_BASE64 secret - building unsigned release (see docs/CODE-SIGNING.md)."
+            Write-Host "No CODE_SIGNING_CERT_BASE64 secret - publishing unsigned release (see docs/CODE-SIGNING.md)."
             exit 0
           }
           $pfx = Join-Path $env:RUNNER_TEMP "code-signing.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+
           $targets = @()
           $targets += Get-ChildItem "dist" -Filter "STGR-IpTV-Setup-*.exe"
-          $targets += Get-Item "dist/staging/STGR-IpTV.exe"
+
+          # Sign the exe inside the portable ZIP too: extract, sign, rezip.
+          $zip = Get-ChildItem "dist" -Filter "STGR-IpTV-*-portable.zip" | Select-Object -First 1
+          if ($zip) {
+            $tmp = Join-Path $env:RUNNER_TEMP "portable"
+            Expand-Archive -Path $zip.FullName -DestinationPath $tmp -Force
+            $inner = Get-ChildItem $tmp -Filter "STGR-IpTV.exe" | Select-Object -First 1
+            if ($inner) { $targets += $inner }
+          }
+
           foreach ($t in $targets) {
             & signtool sign /fd SHA256 /f $pfx /p $env:PFX_PASSWORD /t http://timestamp.digicert.com $t.FullName
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($t.FullName)" }
+          }
+
+          if ($zip) {
+            Compress-Archive -Path (Join-Path $tmp "*") -DestinationPath $zip.FullName -Force
           }
           Write-Host "Artifacts signed."
 
@@ -146,6 +130,7 @@ jobs:
             "{0}  {1}" -f (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower(), $f.Name
           }
           $lines | Set-Content "dist/SHA256SUMS.txt" -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
