@@ -9,8 +9,8 @@
     {
       "name": "ci-windows",
       "displayName": "CI Windows x64 (Release)",
-      "description": "Production build used by GitHub Actions: MSVC x64, Qt from aqtinstall (QT_ROOT), libVLC SDK from VLC_DIR.",
-      "generator": "Visual Studio 17 2022",
+      "description": "Production build used by GitHub Actions: MSVC x64, Qt from aqtinstall (QT_ROOT), libVLC SDK from VLC_DIR. Uses the 'Visual Studio 18 2026' generator because the windows-2025-vs2026 runner image ships Visual Studio 2026 only (no VS 2022); the generator requires CMake >= 4.2, which the image has (4.4.2).",
+      "generator": "Visual Studio 18 2026",
       "architecture": {
         "value": "x64",
         "strategy": "external"
