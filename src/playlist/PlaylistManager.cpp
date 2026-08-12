@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QThreadPool>
 #include <QUuid>
 #include <QtConcurrent/QtConcurrent>
 
@@ -357,7 +358,9 @@ void PlaylistManager::writeCacheFile(const QString& playlistId, const QVector<Ch
     for (const Channel& c : channels)
         arr.append(channelToJson(c));
 
-    QtConcurrent::run([file, arr]() {
+    // Fire-and-forget: the returned QFuture would be discarded, which is a
+    // C4858 error under /WX - use QThreadPool::start for void work instead.
+    QThreadPool::globalInstance()->start([file, arr]() {
         QSaveFile out(file);
         if (out.open(QIODevice::WriteOnly)) {
             out.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));

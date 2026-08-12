@@ -7,9 +7,9 @@
 
 #include "models/Channel.h"
 #include "models/Playlist.h"
+#include "playlist/M3uParser.h"
 
 class IPlaylistSource;
-class M3uParser;
 
 // ---------------------------------------------------------------------------
 // PlaylistManager - owns the playlist registry and the parsed channel pool.
