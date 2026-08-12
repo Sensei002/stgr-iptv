@@ -115,7 +115,10 @@ jobs:
             if (-not (Test-Path $r)) { throw "Missing packaged file: $r" }
           }
           $exe = Get-Item "dist/staging/STGR-IpTV.exe"
-          if ($exe.Length -lt 1MB) { throw "Suspiciously small executable" }
+          # The app exe is a thin shell (all heavy code is in the Qt/libVLC DLLs),
+          # so it can legitimately be under 1 MB. Floor of 100 KB still catches a
+          # corrupt/empty binary.
+          if ($exe.Length -lt 100KB) { throw "Suspiciously small executable: $($exe.Length) bytes" }
           if (-not (Test-Path "dist/SHA256SUMS.txt")) { throw "Missing checksums" }
           Write-Host "Packaging verified: exe $($exe.Length) bytes"
 
