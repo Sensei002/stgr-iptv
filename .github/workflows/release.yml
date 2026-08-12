@@ -77,7 +77,7 @@ jobs:
 
           # The SDK root is the directory that CONTAINS sdk/include/vlc/vlc.h.
           # Check the extraction root itself first, then its subdirectories.
-          $sdkRoot = @($extractDir) + @(Get-ChildItem $extractDir -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue) |
+          $sdkRoot = @(Get-Item $extractDir) + @(Get-ChildItem $extractDir -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue) |
             Where-Object { Test-Path (Join-Path $_.FullName "sdk\include\vlc\vlc.h") } |
             Select-Object -First 1
           if (-not $sdkRoot) {
