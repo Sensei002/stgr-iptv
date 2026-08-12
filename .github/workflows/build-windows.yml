@@ -30,7 +30,8 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
-          modules: qtsvg
+          # QtSvg is part of the base Qt 6 desktop archive - do NOT pass it as
+          # a module (aqtinstall has no standalone qtsvg module for Qt 6).
           cache: true
 
       - name: Download libVLC SDK (pinned release from VideoLAN)
