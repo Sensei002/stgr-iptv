@@ -42,15 +42,19 @@ jobs:
           $archive = Join-Path $env:RUNNER_TEMP "vlc.7z"
 
           Write-Host "Downloading $url"
-          try {
+          # curl.exe follows the get.videolan.org mirror redirect and retries;
+          # Invoke-WebRequest has been observed to save a small HTML page here.
+          & curl.exe -L --fail --retry 3 --retry-delay 2 -o $archive $url
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "curl failed (exit $LASTEXITCODE) - falling back to Invoke-WebRequest"
             Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10
-          } catch {
-            Write-Host "Invoke-WebRequest failed: $($_.Exception.Message) - trying curl.exe"
-            & curl.exe -L -o $archive $url
-            if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
           }
           if (-not (Test-Path $archive)) { throw "Archive was not written to $archive" }
-          Write-Host "Downloaded $((Get-Item $archive).Length) bytes"
+          $size = (Get-Item $archive).Length
+          Write-Host "Downloaded $size bytes"
+          if ($size -lt 10MB) { throw "Downloaded file is too small ($size bytes) - expected the ~38 MB VLC archive" }
+          $sig = [System.IO.File]::ReadAllBytes($archive)[0..5]
+          if (($sig -join ',') -ne '55,122,188,175,39,28') { throw "Downloaded file is not a 7z archive" }
 
           $sevenZip = "C:\Program Files\7-Zip\7z.exe"
           if (-not (Test-Path $sevenZip)) {
