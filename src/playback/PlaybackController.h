@@ -40,6 +40,11 @@ public:
     void stop();
     void retry();
 
+    // Re-starts the current channel. Used after the video surface's native
+    // window handle is recreated (e.g. fullscreen toggling) so the video
+    // output initializes on the new window. No-op when idle.
+    void reload();
+
     // TV-style navigation through the currently set channel pool.
     void playPrevious();
     void playNext();

@@ -134,6 +134,20 @@ void PlaybackController::retry()
     }
 }
 
+void PlaybackController::reload()
+{
+    if (!m_engine || !m_channel.isValid())
+        return;
+
+    qInfo() << "playback: reloading" << m_channel.displayName();
+    m_retryCount = 0;
+    clearReconnect();
+    m_engine->stop();
+    m_engine->setAspectRatio(m_aspectMode);
+    m_engine->load(QUrl(m_channel.url));
+    startLoadTimer();
+}
+
 void PlaybackController::handleFailure(const QString& message)
 {
     if (!m_channel.isValid())

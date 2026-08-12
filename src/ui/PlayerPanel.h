@@ -27,7 +27,8 @@ class PlaybackController;
 //   * channel info header (logo, name, LIVE badge, EPG now/next).
 //
 // Fullscreen toggling reparents the video surface into a frameless top-level
-// frame and re-attaches it to the engine (the HWND survives reparenting).
+// frame. Reparenting recreates the native HWND, so the surface is re-attached
+// to the engine and the channel is restarted to render on the new window.
 // ---------------------------------------------------------------------------
 class PlayerPanel : public QFrame
 {
@@ -109,6 +110,7 @@ private:
     QToolButton* m_miniButton = nullptr;
 
     QWidget* m_fullscreenFrame = nullptr;
+    QLabel* m_fullscreenLoading = nullptr;
     bool m_fullscreenActive = false;
     QTimer m_infoRefreshTimer;
 

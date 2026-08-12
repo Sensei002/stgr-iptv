@@ -315,6 +315,13 @@ void PlayerPanel::onStateChanged(IPlaybackEngine::State state)
     if (loading && m_current.isValid())
         m_loadingTitle->setText(tr("Loading %1\u2026").arg(m_current.displayName()));
 
+    if (m_fullscreenActive && m_fullscreenLoading) {
+        m_fullscreenLoading->setText(loading && m_current.isValid()
+                                         ? tr("Loading %1\u2026").arg(m_current.displayName())
+                                         : QString());
+        m_fullscreenLoading->setVisible(loading);
+    }
+
     m_liveBadge->setVisible(playing);
     if (playing) {
         m_reconnectPage->setVisible(false);
@@ -477,6 +484,15 @@ void PlayerPanel::enterFullscreen()
         m_fullscreenFrame->installEventFilter(this);
         auto* l = new QVBoxLayout(m_fullscreenFrame);
         l->setContentsMargins(0, 0, 0, 0);
+
+        // The in-window loading/error overlays stay behind in the main window,
+        // so give the fullscreen frame its own lightweight loading hint.
+        m_fullscreenLoading = new QLabel(m_fullscreenFrame);
+        m_fullscreenLoading->setAlignment(Qt::AlignCenter);
+        m_fullscreenLoading->setStyleSheet(QStringLiteral(
+            "color: #e9e9ec; font-size: 15px; font-weight: 600; background: transparent;"));
+        m_fullscreenLoading->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_fullscreenLoading->hide();
     }
 
     m_overlayLayout->removeWidget(m_videoSurface);
@@ -484,9 +500,15 @@ void PlayerPanel::enterFullscreen()
     m_fullscreenFrame->layout()->addWidget(m_videoSurface);
     m_fullscreenFrame->showFullScreen();
     m_fullscreenFrame->raise();
+    m_fullscreenLoading->setGeometry(m_fullscreenFrame->rect());
+    m_fullscreenLoading->raise();
     m_videoSurface->setFocus();
 
+    // Reparenting recreates the surface's native HWND; re-attach and restart
+    // the channel so the video output initializes on the new window (otherwise
+    // audio keeps playing into a black screen).
     m_controller->setVideoSurface(m_videoSurface);
+    m_controller->reload();
     m_fullscreenActive = true;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().accent, 20));
 }
@@ -501,18 +523,26 @@ void PlayerPanel::exitFullscreen()
     m_overlayLayout->setCurrentWidget(m_videoSurface);
 
     m_fullscreenFrame->hide();
+    // The surface's HWND changed again when moving back - re-attach and
+    // restart so video renders in the in-window surface.
     m_controller->setVideoSurface(m_videoSurface);
+    m_controller->reload();
     m_fullscreenActive = false;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().text, 20));
 }
 
 bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
 {
-    if (watched == m_fullscreenFrame && event->type() == QEvent::KeyPress) {
-        auto* keyEvent = static_cast<QKeyEvent*>(event);
-        if (keyEvent->key() == Qt::Key_Escape) {
-            exitFullscreen();
-            return true;
+    if (watched == m_fullscreenFrame) {
+        if (event->type() == QEvent::Resize && m_fullscreenLoading) {
+            m_fullscreenLoading->setGeometry(m_fullscreenFrame->rect());
+            m_fullscreenLoading->raise();
+        } else if (event->type() == QEvent::KeyPress) {
+            auto* keyEvent = static_cast<QKeyEvent*>(event);
+            if (keyEvent->key() == Qt::Key_Escape) {
+                exitFullscreen();
+                return true;
+            }
         }
     }
     return QFrame::eventFilter(watched, event);
