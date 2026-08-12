@@ -67,16 +67,15 @@ void FilePlaylistSource::fetch(const Playlist& playlist, int timeoutMs)
     });
 
     // Route the result back onto this object's thread via a watcher.
-    QObject* self = this;
     auto* watcher = new QFutureWatcher<QPair<bool, QByteArray>>(this);
-    connect(watcher, &QFutureWatcher<QPair<bool, QByteArray>>::finished, self, [self, watcher, id = playlist.id]() {
+    connect(watcher, &QFutureWatcher<QPair<bool, QByteArray>>::finished, this, [this, watcher, id = playlist.id]() {
         const auto [ok, data] = watcher->result();
         watcher->deleteLater();
         if (!ok)
-            emit self->finished(id, false, QByteArray(),
-                                tr("Could not read the playlist file."));
+            emit finished(id, false, QByteArray(),
+                          tr("Could not read the playlist file."));
         else
-            emit self->finished(id, true, data, QString());
+            emit finished(id, true, data, QString());
     });
     watcher->setFuture(future);
 }

@@ -14,15 +14,18 @@ NetworkService* NetworkService::instance()
 NetworkService::NetworkService(QObject* parent)
     : QObject(parent)
 {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0) && QT_CONFIG(networkinformation)
-    // Windows backend is available from Qt 6.7; without it we simply stay
-    // "online" and let fetch results drive the heuristic instead.
-    m_netInfo = QNetworkInformation::loadByName(QStringLiteral("windows"));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+    // The Windows backend ships with Qt >= 6.7; without it we simply stay
+    // "online" and let fetch results drive the heuristic instead. We only
+    // report offline when the network is explicitly Disconnected, so an
+    // unknown reachability never trips a false offline state.
+    if (QNetworkInformation::loadDefaultBackend())
+        m_netInfo = QNetworkInformation::instance();
     if (m_netInfo) {
-        setOnline(m_netInfo->isBehindCaptivePortal() ? false : m_netInfo->isOnline());
+        setOnline(m_netInfo->reachability() != QNetworkInformation::Reachability::Disconnected);
         connect(m_netInfo, &QNetworkInformation::reachabilityChanged,
                 this, [this](QNetworkInformation::Reachability r) {
-                    setOnline(r != QNetworkInformation::Reachability::Offline);
+                    setOnline(r != QNetworkInformation::Reachability::Disconnected);
                 });
     }
 #else

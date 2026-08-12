@@ -3,11 +3,11 @@
 #include <QCache>
 #include <QHash>
 #include <QObject>
+#include <QPixmap>
 #include <QQueue>
 #include <QSet>
 
 class QNetworkReply;
-class QPixmap;
 
 // ---------------------------------------------------------------------------
 // LogoCache - lazy, throttled, cached channel logo loading.
@@ -50,7 +50,8 @@ private:
     void startNext();
     void onReplyFinished(QNetworkReply* reply);
 
-    QCache<QString, QPixmap> m_memCache;
+    // mutable: cachedPixmap() const is allowed to warm the LRU cache.
+    mutable QCache<QString, QPixmap> m_memCache;
     QQueue<Pending> m_queue;
     QSet<QString> m_inFlight;
     QSet<QString> m_broken;
