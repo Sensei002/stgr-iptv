@@ -85,5 +85,5 @@ $lines = foreach ($f in $files) {
 $lines | Set-Content (Join-Path $OutDir "SHA256SUMS.txt") -Encoding ascii
 
 Write-Host ""
-Write-Host "[package] done. Artifacts in $OutDir:"
+Write-Host "[package] done. Artifacts in ${OutDir}:"
 Get-ChildItem $OutDir | Select-Object Name, Length
