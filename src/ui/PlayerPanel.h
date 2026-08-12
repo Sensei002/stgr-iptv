@@ -26,11 +26,12 @@ class PlaybackController;
 //     favorite, fullscreen,
 //   * channel info header (logo, name, LIVE badge, EPG now/next).
 //
-// Fullscreen toggling moves the video surface's native window handle into a
-// frameless top-level frame with Win32 SetParent. The SAME HWND keeps
-// receiving frames, so no libVLC calls happen during the toggle - playback
-// never stops/restarts and the UI cannot deadlock. On non-Windows platforms
-// the surface widget is reparented instead.
+// Fullscreen toggling moves the video CONTAINER - a plain widget, never the
+// video surface libVLC renders into - into a frameless top-level frame with
+// Win32 SetParent. The surface's HWND stays permanently in the container, so
+// libVLC's D3D11 swapchain is never reparented or resized directly (only via
+// Qt's normal layout path), avoiding the known libVLC SetParent/resize
+// deadlock. On non-Windows platforms the container widget is reparented.
 // ---------------------------------------------------------------------------
 class PlayerPanel : public QFrame
 {
@@ -112,8 +113,8 @@ private:
     QToolButton* m_miniButton = nullptr;
 
     QWidget* m_fullscreenFrame = nullptr;
-    QLabel* m_fullscreenLoading = nullptr;
     bool m_fullscreenActive = false;
+    int m_fullscreenLayoutIndex = -1; // slot of m_videoContainer in the root layout
     QTimer m_infoRefreshTimer;
 
     Channel m_current;

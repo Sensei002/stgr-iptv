@@ -32,6 +32,10 @@ PlayerPanel::PlayerPanel(PlaybackController* controller, QWidget* parent)
 {
     setProperty("stgrClass", QStringLiteral("panel"));
     setMinimumWidth(360);
+    // Native from birth: fullscreen moves the video container's HWND around,
+    // so keep the panel's own HWND stable to avoid any mid-toggle window
+    // re-creation.
+    winId();
 
     buildUi();
     buildOverlays();
@@ -119,13 +123,18 @@ void PlayerPanel::buildUi()
     m_videoSurface = new QWidget(this);
     m_videoSurface->setStyleSheet(QStringLiteral("background: #000000;"));
     m_videoSurface->setMinimumHeight(200);
-    // Safety net: if the OS gives the moved surface HWND keyboard focus in
-    // fullscreen, Escape must still exit fullscreen.
+    // Safety net: if the OS gives the surface HWND keyboard focus while the
+    // container sits in the fullscreen frame, Escape must still exit.
     m_videoSurface->installEventFilter(this);
     m_controller->setVideoSurface(m_videoSurface);
 
     // Overlays stack (video + loading + error + reconnect banner).
     m_videoContainer = new QWidget(this);
+    // The container is made native BEFORE the surface is added to it, so the
+    // surface's HWND (the one libVLC renders into) is born as a child of the
+    // container's HWND. Fullscreen moves the container HWND, and the video
+    // follows because of this permanent native parent/child link.
+    m_videoContainer->winId();
     m_overlayLayout = new QStackedLayout(m_videoContainer);
     m_overlayLayout->setStackingMode(QStackedLayout::StackAll);
     m_overlayLayout->addWidget(m_videoSurface);
@@ -322,13 +331,6 @@ void PlayerPanel::onStateChanged(IPlaybackEngine::State state)
     if (loading && m_current.isValid())
         m_loadingTitle->setText(tr("Loading %1\u2026").arg(m_current.displayName()));
 
-    if (m_fullscreenActive && m_fullscreenLoading) {
-        m_fullscreenLoading->setText(loading && m_current.isValid()
-                                         ? tr("Loading %1\u2026").arg(m_current.displayName())
-                                         : QString());
-        m_fullscreenLoading->setVisible(loading);
-    }
-
     m_liveBadge->setVisible(playing);
     if (playing) {
         m_reconnectPage->setVisible(false);
@@ -482,7 +484,7 @@ void PlayerPanel::volumeDown()
 
 void PlayerPanel::enterFullscreen()
 {
-    if (m_fullscreenActive || !m_videoSurface)
+    if (m_fullscreenActive || !m_videoContainer)
         return;
 
     if (!m_fullscreenFrame) {
@@ -491,47 +493,39 @@ void PlayerPanel::enterFullscreen()
         m_fullscreenFrame->installEventFilter(this);
         auto* l = new QVBoxLayout(m_fullscreenFrame);
         l->setContentsMargins(0, 0, 0, 0);
-
-        // The in-window loading/error overlays stay behind in the main window,
-        // so give the fullscreen frame its own lightweight loading hint.
-        m_fullscreenLoading = new QLabel(m_fullscreenFrame);
-        m_fullscreenLoading->setAlignment(Qt::AlignCenter);
-        m_fullscreenLoading->setStyleSheet(QStringLiteral(
-            "color: #e9e9ec; font-size: 15px; font-weight: 600; background: transparent;"));
-        m_fullscreenLoading->setAttribute(Qt::WA_TransparentForMouseEvents);
-        m_fullscreenLoading->hide();
     }
 
-    // Let Qt stop managing the surface geometry. The surface stays a Qt child
-    // of the container - only its native HWND moves to the fullscreen frame.
-    m_overlayLayout->removeWidget(m_videoSurface);
+    // Let Qt stop managing the container geometry while it sits in the frame.
+    auto* root = qobject_cast<QVBoxLayout*>(layout());
+    if (root) {
+        m_fullscreenLayoutIndex = root->indexOf(m_videoContainer);
+        root->removeWidget(m_videoContainer);
+    }
 
 #ifdef Q_OS_WIN
-    // Real fix: reparent the NATIVE window handle into the fullscreen frame.
-    // libVLC keeps rendering into the SAME HWND, so there is no stop/restart,
-    // no set_hwnd and no vout recreation - those race with libVLC's D3D11
-    // output and freeze the UI thread. The Qt parent is left untouched, so Qt
-    // never recreates the HWND.
+    // The CONTAINER moves into the fullscreen frame - never the video surface.
+    // libVLC renders into the surface HWND through a D3D11 swapchain, and
+    // reparenting that window while it is presenting is a known libVLC
+    // deadlock. The plain container HWND has no such constraint, and the
+    // surface only ever resizes through Qt's normal layout path (the same
+    // path used when the user drags the window, which is safe).
     m_fullscreenFrame->showFullScreen();
     const HWND frameHwnd = reinterpret_cast<HWND>(m_fullscreenFrame->winId());
-    const HWND surfaceHwnd = reinterpret_cast<HWND>(m_videoSurface->winId());
-    SetParent(surfaceHwnd, frameHwnd);
+    const HWND containerHwnd = reinterpret_cast<HWND>(m_videoContainer->winId());
+    SetParent(containerHwnd, frameHwnd);
     RECT rc;
     GetClientRect(frameHwnd, &rc);
-    SetWindowPos(surfaceHwnd, HWND_TOP, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
+    SetWindowPos(containerHwnd, HWND_TOP, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
     m_fullscreenFrame->raise();
     m_fullscreenFrame->activateWindow();
     m_fullscreenFrame->setFocus();
 #else
-    m_videoSurface->setParent(m_fullscreenFrame);
-    m_fullscreenFrame->layout()->addWidget(m_videoSurface);
+    m_videoContainer->setParent(m_fullscreenFrame);
+    if (auto* fl = m_fullscreenFrame->layout())
+        fl->addWidget(m_videoContainer);
     m_fullscreenFrame->showFullScreen();
     m_fullscreenFrame->raise();
-    m_videoSurface->setFocus();
 #endif
-
-    m_fullscreenLoading->setGeometry(m_fullscreenFrame->rect());
-    m_fullscreenLoading->raise();
 
     m_fullscreenActive = true;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().accent, 20));
@@ -542,25 +536,27 @@ void PlayerPanel::exitFullscreen()
     if (!m_fullscreenActive)
         return;
 
+    auto* root = qobject_cast<QVBoxLayout*>(layout());
+
 #ifdef Q_OS_WIN
+    const HWND panelHwnd = reinterpret_cast<HWND>(winId());
     const HWND containerHwnd = reinterpret_cast<HWND>(m_videoContainer->winId());
-    const HWND surfaceHwnd = reinterpret_cast<HWND>(m_videoSurface->winId());
-    SetParent(surfaceHwnd, containerHwnd);
-    RECT rc;
-    GetClientRect(containerHwnd, &rc);
-    // HWND_BOTTOM keeps the video below the loading/error/reconnect overlays.
-    SetWindowPos(surfaceHwnd, HWND_BOTTOM, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
+    SetParent(containerHwnd, panelHwnd);
     m_fullscreenFrame->hide();
 #else
-    m_videoSurface->setParent(m_videoContainer);
+    m_videoContainer->setParent(this);
     m_fullscreenFrame->hide();
 #endif
 
-    // Hand the surface geometry back to Qt's layout, keeping the overlays on top.
-    m_overlayLayout->insertWidget(0, m_videoSurface);
-    m_reconnectPage->raise();
-    m_loadingPage->raise();
-    m_errorPage->raise();
+    // Hand the container geometry back to the panel's layout (header, video,
+    // EPG, control bar) and relayout synchronously so it never shows a stale
+    // fullscreen-sized geometry. The inner stacked layout keeps the video
+    // below the loading/error/reconnect pages, so no z-order fix-up is needed.
+    if (root && m_fullscreenLayoutIndex >= 0) {
+        root->insertWidget(m_fullscreenLayoutIndex, m_videoContainer, 1);
+        root->activate();
+    }
+    m_fullscreenLayoutIndex = -1;
 
     m_fullscreenActive = false;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().text, 20));
@@ -569,7 +565,7 @@ void PlayerPanel::exitFullscreen()
 bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
 {
     // Escape exits fullscreen whether the focus lands on the frame or on the
-    // native video surface (both can receive keys after the HWND moves).
+    // video surface (both can receive keys while the container is in the frame).
     if (event->type() == QEvent::KeyPress
         && (watched == m_fullscreenFrame || watched == m_videoSurface)) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
@@ -579,22 +575,16 @@ bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
         }
     }
 
-    if (watched == m_fullscreenFrame) {
-        if (event->type() == QEvent::Resize) {
-            if (m_fullscreenLoading) {
-                m_fullscreenLoading->setGeometry(m_fullscreenFrame->rect());
-                m_fullscreenLoading->raise();
-            }
 #ifdef Q_OS_WIN
-            // Keep the native video surface filling the frame.
-            if (m_fullscreenActive && m_videoSurface) {
-                RECT rc;
-                GetClientRect(reinterpret_cast<HWND>(m_fullscreenFrame->winId()), &rc);
-                SetWindowPos(reinterpret_cast<HWND>(m_videoSurface->winId()), HWND_TOP,
-                             0, 0, rc.right, rc.bottom, 0);
-            }
-#endif
+    if (watched == m_fullscreenFrame && event->type() == QEvent::Resize) {
+        // Keep the container (and with it the video surface) filling the frame.
+        if (m_fullscreenActive && m_videoContainer) {
+            RECT rc;
+            GetClientRect(reinterpret_cast<HWND>(m_fullscreenFrame->winId()), &rc);
+            SetWindowPos(reinterpret_cast<HWND>(m_videoContainer->winId()), HWND_TOP,
+                         0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
         }
     }
+#endif
     return QFrame::eventFilter(watched, event);
 }
