@@ -44,7 +44,8 @@ async function main() {
         const runs = await api("actions/runs?per_page=3");
         if (runs.message) {
             console.error("API error:", runs.message);
-            process.exit(1);
+            process.exitCode = 1;
+            return;
         }
         const run = runs.workflow_runs?.[0];
         if (!run) {
@@ -68,5 +69,5 @@ async function main() {
 
 main().catch((e) => {
     console.error("FATAL:", e.message);
-    process.exit(1);
+    process.exitCode = 1;
 });

@@ -83,7 +83,8 @@ jobs:
       - name: Configure CMake
         shell: pwsh
         run: |
-          $env:QT_ROOT = "${{ steps.install-qt.outputs.qtpath }}"
+          # install-qt-action v4 exports QT_ROOT_DIR (it has no action outputs).
+          $env:QT_ROOT = $env:QT_ROOT_DIR
           cmake --preset ci-windows
 
       - name: Build (Release x64)
@@ -97,7 +98,7 @@ jobs:
       - name: Package application (portable ZIP + installer + checksums)
         shell: pwsh
         env:
-          QT_ROOT: ${{ steps.install-qt.outputs.qtpath }}
+          QT_ROOT: ${{ env.QT_ROOT_DIR }}
         run: |
           powershell -ExecutionPolicy Bypass -File tools/package-windows.ps1 `
             -AppExe "build/ci-windows/Release/STGR-IpTV.exe" `
