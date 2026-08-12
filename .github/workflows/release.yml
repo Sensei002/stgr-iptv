@@ -45,13 +45,44 @@ jobs:
       - name: Download libVLC SDK (pinned release from VideoLAN)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $url = "https://get.videolan.org/vlc/$env:VLC_VERSION/win64/vlc-$env:VLC_VERSION-win64.7z"
           $archive = Join-Path $env:RUNNER_TEMP "vlc.7z"
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          & "C:\Program Files\7-Zip\7z.exe" x $archive "-o$env:RUNNER_TEMP\vlc" -y
-          if ($LASTEXITCODE -ne 0) { throw "Failed to extract VLC archive" }
-          $root = Get-ChildItem "$env:RUNNER_TEMP\vlc" -Directory | Select-Object -First 1
-          "VLC_DIR=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "Downloading $url"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRedirection 10
+          } catch {
+            Write-Host "Invoke-WebRequest failed: $($_.Exception.Message) - trying curl.exe"
+            & curl.exe -L -o $archive $url
+            if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+          }
+          if (-not (Test-Path $archive)) { throw "Archive was not written to $archive" }
+          Write-Host "Downloaded $((Get-Item $archive).Length) bytes"
+
+          $sevenZip = "C:\Program Files\7-Zip\7z.exe"
+          if (-not (Test-Path $sevenZip)) {
+            $cmd = Get-Command 7z -ErrorAction SilentlyContinue
+            if ($cmd) { $sevenZip = $cmd.Source } else { throw "7-Zip not found on runner" }
+          }
+          Write-Host "7-Zip: $sevenZip"
+
+          $extractDir = Join-Path $env:RUNNER_TEMP "vlc"
+          & $sevenZip x $archive "-o$extractDir" -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract VLC archive (exit $LASTEXITCODE)" }
+
+          # The SDK root is the directory that CONTAINS sdk/include/vlc/vlc.h.
+          # Check the extraction root itself first, then its subdirectories.
+          $sdkRoot = @($extractDir) + @(Get-ChildItem $extractDir -Directory -Recurse -Depth 3 -ErrorAction SilentlyContinue) |
+            Where-Object { Test-Path (Join-Path $_.FullName "sdk\include\vlc\vlc.h") } |
+            Select-Object -First 1
+          if (-not $sdkRoot) {
+            Write-Host "VLC SDK not found after extraction. Extracted tree:"
+            Get-ChildItem $extractDir -Recurse -Depth 2 | ForEach-Object { $_.FullName }
+            throw "VLC SDK (sdk/include/vlc/vlc.h) not found after extraction"
+          }
+          "VLC_DIR=$($sdkRoot.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "VLC_DIR=$($sdkRoot.FullName)"
 
       - name: Configure CMake
         shell: pwsh
