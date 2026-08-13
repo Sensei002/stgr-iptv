@@ -320,7 +320,7 @@ QString VlcPlaybackEngine::videoInfo() const
         for (unsigned i = 0; i < n && tracks; ++i) {
             if (tracks[i]->i_type != libvlc_track_video)
                 continue;
-            libvlc_video_track_t* v = tracks[i]->u.video;
+            libvlc_video_track_t* v = tracks[i]->video;
             if (v && v->i_width > 0 && v->i_height > 0)
                 info = QStringLiteral("%1x%2").arg(v->i_width).arg(v->i_height);
             else
