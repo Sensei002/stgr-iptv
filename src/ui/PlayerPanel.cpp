@@ -561,22 +561,25 @@ void PlayerPanel::enterFullscreen()
     }
 
 #ifdef Q_OS_WIN
-    // Move the whole PANEL - video, overlays, header, EPG and the control bar
-    // - into the frameless frame, so fullscreen shows the same chrome as the
-    // small window. libVLC renders with the GDI (wingdi) output, which handles
-    // window moves and resizes trivially, and the video surface's HWND simply
-    // rides along inside the panel's native child tree. Qt still believes the
-    // panel lives in its splitter slot, so a relayout on exit restores it.
+    // Show the frame FULLSCREEN first - this is the order that produces a real
+    // fullscreen window. Attaching a child to the hidden frame before showing
+    // it can leave the frame at its default windowed size, i.e. a big window
+    // with the desktop visible around it. Then move the whole PANEL - video,
+    // overlays, header, EPG and the control bar - into the frame, so fullscreen
+    // shows the same chrome as the small window. libVLC renders with the GDI
+    // (wingdi) output, which handles window moves and resizes trivially, and
+    // the video surface's HWND simply rides along inside the panel's native
+    // child tree. Qt still believes the panel lives in its splitter slot, so a
+    // relayout on exit restores it.
+    m_fullscreenFrame->showFullScreen();
     const HWND panelHwnd = reinterpret_cast<HWND>(winId());
     m_fullscreenPrevParent = GetParent(panelHwnd);
     const HWND frameHwnd = reinterpret_cast<HWND>(m_fullscreenFrame->winId());
     SetParent(panelHwnd, frameHwnd);
-    // Size the panel to the full screen BEFORE the frame becomes visible so
-    // the transition never flashes an empty black frame.
-    SetWindowPos(panelHwnd, HWND_TOP, 0, 0,
-                 GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
-                 SWP_SHOWWINDOW);
-    m_fullscreenFrame->showFullScreen();
+    // Size the panel to the frame's actual fullscreen client area.
+    RECT rc;
+    GetClientRect(frameHwnd, &rc);
+    SetWindowPos(panelHwnd, HWND_TOP, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
     m_fullscreenFrame->raise();
     m_fullscreenFrame->activateWindow();
     m_fullscreenFrame->setFocus();
