@@ -14,6 +14,7 @@ class QPushButton;
 class QSlider;
 class QStackedLayout;
 class QToolButton;
+class QVBoxLayout;
 class QWidget;
 class PlaybackController;
 
