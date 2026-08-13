@@ -1,14 +1,17 @@
 #include "ui/PlayerPanel.h"
 
+#include <QAction>
 #include <QEvent>
 #include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMenu>
 #include <QPushButton>
 #include <QSlider>
 #include <QStackedLayout>
 #include <QToolButton>
+#include <QVariant>
 #include <QVBoxLayout>
 
 #ifdef Q_OS_WIN
@@ -36,6 +39,11 @@ PlayerPanel::PlayerPanel(PlaybackController* controller, QWidget* parent)
     // so keep the panel's own HWND stable to avoid any mid-toggle window
     // re-creation.
     winId();
+    // While the panel sits inside the fullscreen frame, Qt still thinks it is
+    // laid out in its splitter slot; if the main window is resized Qt tries to
+    // shrink the panel and the video with it. Filtering our own events lets us
+    // snap the panel back to fill the frame in that case.
+    installEventFilter(this);
 
     buildUi();
     buildOverlays();
@@ -259,6 +267,30 @@ void PlayerPanel::buildControls()
     stop->setAutoRaise(true);
     connect(stop, &QToolButton::clicked, this, [this]() { m_controller->stop(); });
 
+    m_liveButton = new QToolButton(this);
+    m_liveButton->setText(QStringLiteral("LIVE"));
+    m_liveButton->setToolTip(tr("Jump back to live (reloads the stream)"));
+    m_liveButton->setAutoRaise(true);
+    m_liveButton->setStyleSheet(QStringLiteral(
+        "color: #e2343f; font-weight: 700; font-size: 11px; padding: 2px 8px;"));
+    connect(m_liveButton, &QToolButton::clicked, this, [this]() {
+        m_controller->jumpToLive();
+    });
+
+    m_qualityButton = new QToolButton(this);
+    m_qualityButton->setPopupMode(QToolButton::InstantPopup);
+    m_qualityButton->setToolTip(tr("Stream quality"));
+    m_qualityButton->setAutoRaise(true);
+    m_qualityButton->setStyleSheet(QStringLiteral(
+        "font-size: 11px; font-weight: 600; padding: 2px 8px;"));
+    connect(m_qualityButton, &QToolButton::triggered, this, [this](QAction* action) {
+        if (!action)
+            return;
+        const Channel ch = action->data().value<Channel>();
+        if (ch.isValid())
+            m_controller->playChannel(ch);
+    });
+
     m_muteButton = new QToolButton(this);
     m_muteButton->setIcon(Theme::icon(QStringLiteral("volume"), Theme::colors().text, 20));
     m_muteButton->setToolTip(tr("Mute (M)"));
@@ -295,6 +327,9 @@ void PlayerPanel::buildControls()
     bar->addWidget(m_playPause);
     bar->addWidget(next);
     bar->addWidget(stop);
+    bar->addSpacing(10);
+    bar->addWidget(m_liveButton);
+    bar->addWidget(m_qualityButton);
     bar->addSpacing(10);
     bar->addWidget(m_muteButton);
     bar->addWidget(m_volumeSlider);
@@ -404,7 +439,37 @@ void PlayerPanel::onChannelChanged(const Channel& channel)
 
     m_videoInfo->clear();
     m_epgLabel->setVisible(false);
+    rebuildQualityMenu();
     refreshEpgLabel();
+}
+
+void PlayerPanel::rebuildQualityMenu()
+{
+    if (!m_qualityButton)
+        return;
+
+    const QVector<Channel> variants = m_controller->qualityVariants();
+    m_qualityButton->setText(PlaybackController::qualityLabel(m_current));
+
+    if (variants.size() <= 1) {
+        m_qualityButton->setMenu(nullptr);
+        m_qualityButton->setEnabled(false);
+        m_qualityButton->setToolTip(tr("No alternate qualities in this playlist"));
+        return;
+    }
+
+    auto* menu = new QMenu(this);
+    const QString currentKey = m_current.stableKey();
+    for (const Channel& v : variants) {
+        QAction* action = menu->addAction(PlaybackController::qualityLabel(v));
+        action->setCheckable(true);
+        action->setChecked(v.stableKey() == currentKey);
+        action->setData(QVariant::fromValue(v));
+        action->setToolTip(v.displayName());
+    }
+    m_qualityButton->setMenu(menu);
+    m_qualityButton->setEnabled(true);
+    m_qualityButton->setToolTip(tr("Select stream quality"));
 }
 
 void PlayerPanel::setChannelPool(const QVector<Channel>& pool)
@@ -484,7 +549,7 @@ void PlayerPanel::volumeDown()
 
 void PlayerPanel::enterFullscreen()
 {
-    if (m_fullscreenActive || !m_videoContainer)
+    if (m_fullscreenActive)
         return;
 
     if (!m_fullscreenFrame) {
@@ -495,26 +560,20 @@ void PlayerPanel::enterFullscreen()
         l->setContentsMargins(0, 0, 0, 0);
     }
 
-    // Let Qt stop managing the container geometry while it sits in the frame.
-    auto* root = qobject_cast<QVBoxLayout*>(layout());
-    if (root) {
-        m_fullscreenLayoutIndex = root->indexOf(m_videoContainer);
-        root->removeWidget(m_videoContainer);
-    }
-
 #ifdef Q_OS_WIN
-    // The CONTAINER moves into the fullscreen frame - never the video surface.
-    // libVLC renders into the surface HWND, and reparenting that window while
-    // it is presenting is a known libVLC deadlock. The plain container HWND
-    // has no such constraint, and the surface only ever resizes through Qt's
-    // normal layout path (the same path used when the user drags the window).
+    // Move the whole PANEL - video, overlays, header, EPG and the control bar
+    // - into the frameless frame, so fullscreen shows the same chrome as the
+    // small window. libVLC renders with the GDI (wingdi) output, which handles
+    // window moves and resizes trivially, and the video surface's HWND simply
+    // rides along inside the panel's native child tree. Qt still believes the
+    // panel lives in its splitter slot, so a relayout on exit restores it.
+    const HWND panelHwnd = reinterpret_cast<HWND>(winId());
+    m_fullscreenPrevParent = GetParent(panelHwnd);
     const HWND frameHwnd = reinterpret_cast<HWND>(m_fullscreenFrame->winId());
-    const HWND containerHwnd = reinterpret_cast<HWND>(m_videoContainer->winId());
-    SetParent(containerHwnd, frameHwnd);
-    // Size the video to the full screen BEFORE the frame becomes visible so
-    // the transition never flashes an empty black frame (the Resize handler
-    // in eventFilter keeps the container filled afterwards).
-    SetWindowPos(containerHwnd, HWND_TOP, 0, 0,
+    SetParent(panelHwnd, frameHwnd);
+    // Size the panel to the full screen BEFORE the frame becomes visible so
+    // the transition never flashes an empty black frame.
+    SetWindowPos(panelHwnd, HWND_TOP, 0, 0,
                  GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
                  SWP_SHOWWINDOW);
     m_fullscreenFrame->showFullScreen();
@@ -522,9 +581,10 @@ void PlayerPanel::enterFullscreen()
     m_fullscreenFrame->activateWindow();
     m_fullscreenFrame->setFocus();
 #else
-    m_videoContainer->setParent(m_fullscreenFrame);
+    m_fullscreenPrevQtParent = parentWidget();
+    setParent(m_fullscreenFrame);
     if (auto* fl = m_fullscreenFrame->layout())
-        fl->addWidget(m_videoContainer);
+        fl->addWidget(this);
     m_fullscreenFrame->showFullScreen();
     m_fullscreenFrame->raise();
 #endif
@@ -538,29 +598,29 @@ void PlayerPanel::exitFullscreen()
     if (!m_fullscreenActive)
         return;
 
-    auto* root = qobject_cast<QVBoxLayout*>(layout());
-
 #ifdef Q_OS_WIN
     // Hide the frame first so the fullscreen surface doesn't linger on top of
-    // the window while the container is being reparented back into it.
+    // the window while the panel is being reparented back.
     m_fullscreenFrame->hide();
     const HWND panelHwnd = reinterpret_cast<HWND>(winId());
-    const HWND containerHwnd = reinterpret_cast<HWND>(m_videoContainer->winId());
-    SetParent(containerHwnd, panelHwnd);
+    if (m_fullscreenPrevParent)
+        SetParent(panelHwnd, static_cast<HWND>(m_fullscreenPrevParent));
+    m_fullscreenPrevParent = nullptr;
+    // Qt still thinks the panel lives in its splitter slot; force a relayout
+    // so it snaps back to its in-window size immediately.
+    if (QWidget* p = parentWidget()) {
+        if (QLayout* l = p->layout())
+            l->activate();
+        p->update();
+    }
 #else
-    m_videoContainer->setParent(this);
+    if (auto* fl = m_fullscreenFrame->layout())
+        fl->removeWidget(this);
+    if (m_fullscreenPrevQtParent)
+        setParent(m_fullscreenPrevQtParent);
+    m_fullscreenPrevQtParent = nullptr;
     m_fullscreenFrame->hide();
 #endif
-
-    // Hand the container geometry back to the panel's layout (header, video,
-    // EPG, control bar) and relayout synchronously so it never shows a stale
-    // fullscreen-sized geometry. The inner stacked layout keeps the video
-    // below the loading/error/reconnect pages, so no z-order fix-up is needed.
-    if (root && m_fullscreenLayoutIndex >= 0) {
-        root->insertWidget(m_fullscreenLayoutIndex, m_videoContainer, 1);
-        root->activate();
-    }
-    m_fullscreenLayoutIndex = -1;
 
     m_fullscreenActive = false;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().text, 20));
@@ -568,10 +628,10 @@ void PlayerPanel::exitFullscreen()
 
 bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
 {
-    // Escape exits fullscreen whether the focus lands on the frame or on the
-    // video surface (both can receive keys while the container is in the frame).
+    // Escape exits fullscreen whether the focus lands on the frame, the panel
+    // or the video surface (all can receive keys while in fullscreen).
     if (event->type() == QEvent::KeyPress
-        && (watched == m_fullscreenFrame || watched == m_videoSurface)) {
+        && (watched == m_fullscreenFrame || watched == this || watched == m_videoSurface)) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Escape && m_fullscreenActive) {
             exitFullscreen();
@@ -580,14 +640,16 @@ bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
     }
 
 #ifdef Q_OS_WIN
-    if (watched == m_fullscreenFrame && event->type() == QEvent::Resize) {
-        // Keep the container (and with it the video surface) filling the frame.
-        if (m_fullscreenActive && m_videoContainer) {
-            RECT rc;
-            GetClientRect(reinterpret_cast<HWND>(m_fullscreenFrame->winId()), &rc);
-            SetWindowPos(reinterpret_cast<HWND>(m_videoContainer->winId()), HWND_TOP,
-                         0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
-        }
+    // Keep the panel filling the fullscreen frame - both when the frame is
+    // resized and when Qt tries to shrink the panel back into its splitter
+    // slot (e.g. the main window is resized while in fullscreen).
+    if (m_fullscreenActive && m_fullscreenFrame
+        && (watched == m_fullscreenFrame || watched == this)
+        && event->type() == QEvent::Resize) {
+        RECT rc;
+        GetClientRect(reinterpret_cast<HWND>(m_fullscreenFrame->winId()), &rc);
+        SetWindowPos(reinterpret_cast<HWND>(winId()), HWND_TOP, 0, 0,
+                     rc.right, rc.bottom, SWP_SHOWWINDOW);
     }
 #endif
     return QFrame::eventFilter(watched, event);

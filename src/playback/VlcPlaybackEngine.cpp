@@ -2,6 +2,7 @@
 
 #include <vlc/vlc.h>
 
+#include <chrono>
 #include <QList>
 
 #include "core/Log.h"
@@ -51,12 +52,16 @@ VlcPlaybackEngine::VlcPlaybackEngine(QWidget* videoSurface, int networkCachingMs
         return;
     }
 
+    // The worker must be running before createPlayer() so the set_hwnd posted
+    // from attachSurface() is picked up.
+    m_worker = std::thread([this]() { workerLoop(); });
     createPlayer();
 }
 
 VlcPlaybackEngine::~VlcPlaybackEngine()
 {
-    destroyPlayer();
+    stopWorker();       // waits for pending libvlc calls to finish
+    destroyPlayer();    // safe now: no worker thread touches the player
     if (m_vlc) {
         libvlc_release(m_vlc);
         m_vlc = nullptr;
@@ -171,59 +176,77 @@ void VlcPlaybackEngine::load(const QUrl& url)
     }
 
     const QByteArray urlBytes = url.toString(QUrl::FullyEncoded).toUtf8();
-    libvlc_media_t* media = libvlc_media_new_location(m_vlc, urlBytes.constData());
-    if (!media) {
-        emit errorOccurred(tr("Could not open the stream."));
-        return;
-    }
 
-    if (m_media)
-        libvlc_media_release(m_media);
-
-    m_media = media;
+    // UI-side state updates happen immediately; the actual libvlc calls run on
+    // the worker so a stalled input thread can never freeze the UI.
     m_loading = true;
     setPosition(0);
     setDuration(0);
     setState(State::Loading);
 
-    libvlc_media_player_set_media(m_player, m_media);
-    libvlc_media_player_play(m_player);
+    post([this, urlBytes]() {
+        if (!m_player || !m_vlc)
+            return;
+
+        libvlc_media_t* media = libvlc_media_new_location(m_vlc, urlBytes.constData());
+        if (!media) {
+            emit errorOccurred(tr("Could not open the stream."));
+            return;
+        }
+
+        if (m_media)
+            libvlc_media_release(m_media);
+        m_media = media;
+
+        libvlc_media_player_set_media(m_player, m_media);
+        libvlc_media_player_play(m_player);
+    });
 
     qInfo() << "playback: loading" << Log::redactUrl(url.toString());
 }
 
 void VlcPlaybackEngine::play()
 {
-    if (m_player)
-        libvlc_media_player_play(m_player);
+    post([this]() {
+        if (m_player)
+            libvlc_media_player_play(m_player);
+    });
 }
 
 void VlcPlaybackEngine::pause()
 {
-    if (m_player && libvlc_media_player_can_pause(m_player))
-        libvlc_media_player_set_pause(m_player, 1);
+    post([this]() {
+        if (m_player && libvlc_media_player_can_pause(m_player))
+            libvlc_media_player_set_pause(m_player, 1);
+    });
 }
 
 void VlcPlaybackEngine::stop()
 {
     m_loading = false;
-    if (m_player) {
-        libvlc_media_player_stop(m_player);
-        setState(State::Stopped);
-    }
+    post([this]() {
+        if (m_player)
+            libvlc_media_player_stop(m_player);
+    });
+    setState(State::Stopped);
 }
 
 void VlcPlaybackEngine::seek(qint64 positionMs)
 {
-    if (m_player && positionMs >= 0)
-        libvlc_media_player_set_time(m_player, positionMs);
+    post([this, positionMs]() {
+        if (m_player && positionMs >= 0)
+            libvlc_media_player_set_time(m_player, positionMs);
+    });
 }
 
 void VlcPlaybackEngine::setVolume(int percent)
 {
     m_volume = qBound(0, percent, 100);
-    if (m_player)
-        libvlc_audio_set_volume(m_player, m_volume);
+    const int vol = m_volume; // snapshot for the worker
+    post([this, vol]() {
+        if (m_player)
+            libvlc_audio_set_volume(m_player, vol);
+    });
 }
 
 int VlcPlaybackEngine::volume() const
@@ -234,8 +257,10 @@ int VlcPlaybackEngine::volume() const
 void VlcPlaybackEngine::setMuted(bool muted)
 {
     m_muted = muted;
-    if (m_player)
-        libvlc_audio_set_mute(m_player, m_muted ? 1 : 0);
+    post([this, muted]() {
+        if (m_player)
+            libvlc_audio_set_mute(m_player, muted ? 1 : 0);
+    });
 }
 
 bool VlcPlaybackEngine::muted() const
@@ -250,7 +275,13 @@ void VlcPlaybackEngine::attachSurface(QWidget* widget)
         return;
 
 #ifdef Q_OS_WIN
-    libvlc_media_player_set_hwnd(m_player, reinterpret_cast<void*>(m_surface->winId()));
+    // winId() must run on the UI thread (QWidget); set_hwnd itself runs on the
+    // worker so it is ordered after any pending play/pause/stop commands.
+    const void* hwnd = reinterpret_cast<void*>(m_surface->winId());
+    post([this, hwnd]() {
+        if (m_player)
+            libvlc_media_player_set_hwnd(m_player, hwnd);
+    });
 #endif
 }
 
@@ -262,8 +293,10 @@ void VlcPlaybackEngine::setAspectRatio(int mode)
     case 2: aspect = "4:3"; break;
     default: aspect = nullptr; // auto
     }
-    if (m_player)
-        libvlc_video_set_aspect_ratio(m_player, aspect);
+    post([this, aspect]() {
+        if (m_player)
+            libvlc_video_set_aspect_ratio(m_player, aspect);
+    });
 }
 
 void VlcPlaybackEngine::setHardwareAcceleration(int mode)
@@ -278,22 +311,94 @@ QString VlcPlaybackEngine::videoInfo() const
     if (!m_player)
         return QString();
 
-    unsigned int width = 0;
-    unsigned int height = 0;
-    libvlc_video_get_size(m_player, 0, &width, &height);
+    QString info;
+
+    // Resolution / FPS / bitrate come from the parsed media track description.
+    if (m_media) {
+        libvlc_media_track_t** tracks = nullptr;
+        const unsigned n = libvlc_media_tracks_get(m_media, &tracks);
+        for (unsigned i = 0; i < n && tracks; ++i) {
+            if (tracks[i]->i_type != libvlc_track_video)
+                continue;
+            if (tracks[i]->i_width > 0 && tracks[i]->i_height > 0)
+                info = QStringLiteral("%1x%2").arg(tracks[i]->i_width).arg(tracks[i]->i_height);
+            else
+                info = tr("stream");
+            if (tracks[i]->i_fps > 0.0f)
+                info += QStringLiteral(" \u00b7 %1 fps").arg(tracks[i]->i_fps, 0, 'f', 0);
+            if (tracks[i]->i_bitrate > 0)
+                info += QStringLiteral(" \u00b7 %1 Mbit/s")
+                            .arg(tracks[i]->i_bitrate / 1000000.0, 0, 'f', 1);
+            break;
+        }
+        if (tracks)
+            libvlc_media_tracks_release(tracks, n);
+    }
+    if (info.isEmpty())
+        info = tr("stream");
 
     const int audioTracks = libvlc_audio_get_track_count(m_player);
     const int videoTracks = libvlc_video_get_track_count(m_player);
-
-    QString info;
-    if (width > 0 && height > 0)
-        info = QStringLiteral("%1x%2").arg(width).arg(height);
-    else
-        info = tr("stream");
-
     if (videoTracks > 0)
         info += QStringLiteral(" \u00b7 %1 video").arg(videoTracks);
     if (audioTracks > 0)
         info += QStringLiteral(" \u00b7 %1 audio").arg(audioTracks);
     return info;
+}
+
+// ---------------------------------------------------------------------------
+// Worker thread
+// ---------------------------------------------------------------------------
+void VlcPlaybackEngine::post(std::function<void()> fn)
+{
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        m_queue.push_back(std::move(fn));
+    }
+    m_cv.notify_one();
+}
+
+void VlcPlaybackEngine::workerLoop()
+{
+    std::unique_lock<std::mutex> lk(m_mutex);
+    while (true) {
+        m_cv.wait(lk, [this]() { return !m_queue.empty() || m_stopWorker; });
+        while (!m_queue.empty()) {
+            std::function<void()> fn = std::move(m_queue.front());
+            m_queue.pop_front();
+            lk.unlock();
+            fn();
+            lk.lock();
+        }
+        if (m_stopWorker)
+            break;
+    }
+    m_workerFinished = true;
+}
+
+void VlcPlaybackEngine::stopWorker()
+{
+    if (!m_worker.joinable())
+        return;
+
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        m_stopWorker = true;
+    }
+    m_cv.notify_all();
+
+    // The worker normally finishes instantly (the queue is empty and the
+    // current command has completed). If a libvlc call is genuinely wedged,
+    // don't hang the UI thread at shutdown either - wait a short bounded time,
+    // then detach and let the process exit.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!m_workerFinished.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+
+    if (m_workerFinished.load()) {
+        m_worker.join();
+    } else {
+        qWarning() << "playback: worker thread still busy; detaching at shutdown";
+        m_worker.detach();
+    }
 }

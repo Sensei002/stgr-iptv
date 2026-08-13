@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(STGR_IpTV
-    VERSION 1.0.5
+    VERSION 1.0.6
     DESCRIPTION "STGR IpTV - lightweight Windows live TV player by STEiGER Dojo"
     HOMEPAGE_URL "https://github.com/Sensei002/stgr-iptv"
     LANGUAGES CXX

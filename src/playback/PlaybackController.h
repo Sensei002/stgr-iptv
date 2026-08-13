@@ -45,6 +45,19 @@ public:
     void playNext();
     void setChannelPool(const QVector<Channel>& pool);
 
+    // Reloads the current stream, snapping playback back to the live edge
+    // (the IPTV equivalent of YouTube's "jump to live").
+    void jumpToLive();
+
+    // Alternate qualities of the current channel found in the pool (same
+    // playlist, same name minus the quality suffix, e.g. "CNN HD" / "CNN SD").
+    // The current channel is always included first.
+    QVector<Channel> qualityVariants() const;
+
+    // Human-readable quality label extracted from a channel name
+    // ("1080p60", "720", "HD", "4K", ...) or "Auto" when none is present.
+    static QString qualityLabel(const Channel& channel);
+
     // -- audio / video ----------------------------------------------------------
     void setVolume(int percent);
     void toggleMute();

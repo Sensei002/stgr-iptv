@@ -29,7 +29,7 @@ void SettingsTest::defaultsAreSane()
     Settings* s = Settings::instance();
     s->load();
 
-    QCOMPARE(s->hardwareAcceleration(), 0);
+    QCOMPARE(s->hardwareAcceleration(), 2); // software decode by default
     QCOMPARE(s->bufferSizeMs(), 1500);
     QCOMPARE(s->networkTimeoutSec(), 10);
     QCOMPARE(s->maxRetries(), 3);

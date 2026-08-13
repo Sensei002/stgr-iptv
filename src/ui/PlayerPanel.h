@@ -104,6 +104,8 @@ private:
     QLabel* m_epgLabel = nullptr;
 
     QToolButton* m_playPause = nullptr;
+    QToolButton* m_liveButton = nullptr;
+    QToolButton* m_qualityButton = nullptr;
     QToolButton* m_muteButton = nullptr;
     QSlider* m_volumeSlider = nullptr;
     QLabel* m_volumeLabel = nullptr;
@@ -112,9 +114,12 @@ private:
     QToolButton* m_favoriteButton = nullptr;
     QToolButton* m_miniButton = nullptr;
 
+    void rebuildQualityMenu();
+
     QWidget* m_fullscreenFrame = nullptr;
     bool m_fullscreenActive = false;
-    int m_fullscreenLayoutIndex = -1; // slot of m_videoContainer in the root layout
+    void* m_fullscreenPrevParent = nullptr; // Win32 parent restored on exit
+    QWidget* m_fullscreenPrevQtParent = nullptr; // Qt parent restored on exit (non-Windows)
     QTimer m_infoRefreshTimer;
 
     Channel m_current;

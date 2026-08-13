@@ -86,7 +86,10 @@ void Settings::setWindowGeometry(const QByteArray& v) { setValue(QStringLiteral(
 bool Settings::windowMaximized() const             { return value(QStringLiteral("windowMaximized"), false).toBool(); }
 void Settings::setWindowMaximized(bool v)          { setValue(QStringLiteral("windowMaximized"), v); }
 
-int Settings::hardwareAcceleration() const         { return value(QStringLiteral("hwAcceleration"), 0).toInt(); }
+// Default to "disabled" (software decode): hardware decoding engages libVLC's
+// D3D11 decoder, which has been the source of UI freezes on some systems.
+// Users who want it can opt in through Settings -> Playback.
+int Settings::hardwareAcceleration() const         { return value(QStringLiteral("hwAcceleration"), 2).toInt(); }
 void Settings::setHardwareAcceleration(int v)      { setValue(QStringLiteral("hwAcceleration"), qBound(0, v, 2)); }
 int Settings::bufferSizeMs() const                 { return value(QStringLiteral("bufferSizeMs"), kDefaultBufferMs).toInt(); }
 void Settings::setBufferSizeMs(int v)              { setValue(QStringLiteral("bufferSizeMs"), qBound(0, v, 10000)); }

@@ -1,6 +1,9 @@
 #include "playback/PlaybackController.h"
 
+#include <QRegularExpression>
 #include <QUrl>
+
+#include <algorithm>
 
 #include "core/Log.h"
 #include "playback/EngineFactory.h"
@@ -9,6 +12,26 @@
 
 namespace {
 constexpr int kLoadTimeoutMs = 20000;
+
+// Quality tokens stripped when matching channel variants ("CNN HD" vs
+// "CNN SD") and used to label the quality picker. Longest alternatives first
+// so "1080p60" matches before "1080p".
+const QRegularExpression& qualityTokenRe()
+{
+    static const QRegularExpression re(QStringLiteral(
+        "\\b(2160p|1080p\\d*|1080p|1080i|1080|720p|720|576p|576|540p|480p|480|"
+        "360p|240p|144p|4k|uhd|fhd|qhd|hd|sd|60fps|50fps|30fps|25fps|24fps)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    return re;
+}
+
+QString normalizedName(const Channel& c)
+{
+    QString n = c.displayName().toLower();
+    n.remove(qualityTokenRe());
+    n.remove(QRegularExpression(QStringLiteral("[[\\](){}]")));
+    return n.simplified();
+}
 }
 
 PlaybackController::PlaybackController(QObject* parent)
@@ -231,6 +254,40 @@ void PlaybackController::updatePoolIndex()
             break;
         }
     }
+}
+
+void PlaybackController::jumpToLive()
+{
+    if (m_channel.isValid())
+        playChannel(m_channel);
+}
+
+QVector<Channel> PlaybackController::qualityVariants() const
+{
+    if (!m_channel.isValid())
+        return {};
+
+    const QString base = normalizedName(m_channel);
+    QVector<Channel> variants;
+    variants.reserve(m_pool.size());
+    for (const Channel& c : m_pool) {
+        if (c.playlistId == m_channel.playlistId && normalizedName(c) == base)
+            variants.append(c);
+    }
+
+    // Put the currently playing channel first.
+    const QString key = m_channel.stableKey();
+    std::stable_partition(variants.begin(), variants.end(),
+                          [&key](const Channel& c) { return c.stableKey() != key; });
+    return variants;
+}
+
+QString PlaybackController::qualityLabel(const Channel& channel)
+{
+    const QRegularExpressionMatch m = qualityTokenRe().match(channel.displayName());
+    if (m.hasMatch())
+        return m.captured(1).toUpper();
+    return QStringLiteral("Auto");
 }
 
 void PlaybackController::playPrevious()
