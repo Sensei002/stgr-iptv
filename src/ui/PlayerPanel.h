@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QFrame>
+#include <QList>
 #include <QStackedWidget>
 #include <QTimer>
 
@@ -22,16 +23,16 @@ class PlaybackController;
 //   * loading overlay (spinner + channel name),
 //   * error overlay with Retry / Previous Channel / Back to Channel List,
 //   * reconnect banner,
-//   * control bar: play/pause, stop, channel prev/next, volume, mute, aspect,
-//     favorite, fullscreen,
+//   * control bar: play/pause, LIVE, quality, stop, channel prev/next, volume,
+//     mute, aspect, favorite, fullscreen,
 //   * channel info header (logo, name, LIVE badge, EPG now/next).
 //
-// Fullscreen toggling moves the video CONTAINER - a plain widget, never the
-// video surface libVLC renders into - into a frameless top-level frame with
-// Win32 SetParent. The surface's HWND stays permanently in the container, so
-// libVLC's D3D11 swapchain is never reparented or resized directly (only via
-// Qt's normal layout path), avoiding the known libVLC SetParent/resize
-// deadlock. On non-Windows platforms the container widget is reparented.
+// Fullscreen toggling is done purely with Qt: the whole panel (video + all
+// chrome) is reparented into a frameless top-level frame whose geometry is
+// forced to exactly cover the screen, then shown full screen. libVLC renders
+// through the GDI (wingdi) output, which follows window moves/resizes without
+// any special handling, so relocating the video surface's native window along
+// with the panel is safe.
 // ---------------------------------------------------------------------------
 class PlayerPanel : public QFrame
 {
@@ -118,8 +119,9 @@ private:
 
     QWidget* m_fullscreenFrame = nullptr;
     bool m_fullscreenActive = false;
-    void* m_fullscreenPrevParent = nullptr; // Win32 parent restored on exit
-    QWidget* m_fullscreenPrevQtParent = nullptr; // Qt parent restored on exit (non-Windows)
+    QWidget* m_fullscreenPrevQtParent = nullptr; // original Qt parent (splitter) restored on exit
+    int m_fullscreenSplitterIndex = -1;          // original slot in the splitter
+    QList<int> m_fullscreenSplitterSizes;        // original splitter proportions
     QTimer m_infoRefreshTimer;
 
     Channel m_current;

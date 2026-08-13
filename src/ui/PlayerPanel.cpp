@@ -1,22 +1,22 @@
 #include "ui/PlayerPanel.h"
 
 #include <QAction>
+#include <QCursor>
 #include <QEvent>
 #include <QGraphicsOpacityEffect>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
+#include <QScreen>
 #include <QSlider>
+#include <QSplitter>
 #include <QStackedLayout>
 #include <QToolButton>
 #include <QVariant>
 #include <QVBoxLayout>
-
-#ifdef Q_OS_WIN
-#include <QtCore/qt_windows.h>
-#endif
 
 #include "core/Log.h"
 #include "playback/PlaybackController.h"
@@ -35,14 +35,10 @@ PlayerPanel::PlayerPanel(PlaybackController* controller, QWidget* parent)
 {
     setProperty("stgrClass", QStringLiteral("panel"));
     setMinimumWidth(360);
-    // Native from birth: fullscreen moves the video container's HWND around,
-    // so keep the panel's own HWND stable to avoid any mid-toggle window
-    // re-creation.
+    // Native from birth keeps the video surface's window handle stable.
     winId();
-    // While the panel sits inside the fullscreen frame, Qt still thinks it is
-    // laid out in its splitter slot; if the main window is resized Qt tries to
-    // shrink the panel and the video with it. Filtering our own events lets us
-    // snap the panel back to fill the frame in that case.
+    // Filter our own events so Escape exits fullscreen when the panel holds
+    // focus.
     installEventFilter(this);
 
     buildUi();
@@ -131,8 +127,8 @@ void PlayerPanel::buildUi()
     m_videoSurface = new QWidget(this);
     m_videoSurface->setStyleSheet(QStringLiteral("background: #000000;"));
     m_videoSurface->setMinimumHeight(200);
-    // Safety net: if the OS gives the surface HWND keyboard focus while the
-    // container sits in the fullscreen frame, Escape must still exit.
+    // Safety net: if the OS gives the surface HWND keyboard focus while in
+    // fullscreen, Escape must still exit.
     m_videoSurface->installEventFilter(this);
     m_controller->setVideoSurface(m_videoSurface);
 
@@ -140,8 +136,8 @@ void PlayerPanel::buildUi()
     m_videoContainer = new QWidget(this);
     // The container is made native BEFORE the surface is added to it, so the
     // surface's HWND (the one libVLC renders into) is born as a child of the
-    // container's HWND. Fullscreen moves the container HWND, and the video
-    // follows because of this permanent native parent/child link.
+    // container's HWND. When the panel moves (fullscreen, window drags), the
+    // video follows through this permanent native parent/child link.
     m_videoContainer->winId();
     m_overlayLayout = new QStackedLayout(m_videoContainer);
     m_overlayLayout->setStackingMode(QStackedLayout::StackAll);
@@ -560,37 +556,36 @@ void PlayerPanel::enterFullscreen()
         l->setContentsMargins(0, 0, 0, 0);
     }
 
-#ifdef Q_OS_WIN
-    // Show the frame FULLSCREEN first - this is the order that produces a real
-    // fullscreen window. Attaching a child to the hidden frame before showing
-    // it can leave the frame at its default windowed size, i.e. a big window
-    // with the desktop visible around it. Then move the whole PANEL - video,
-    // overlays, header, EPG and the control bar - into the frame, so fullscreen
-    // shows the same chrome as the small window. libVLC renders with the GDI
-    // (wingdi) output, which handles window moves and resizes trivially, and
-    // the video surface's HWND simply rides along inside the panel's native
-    // child tree. Qt still believes the panel lives in its splitter slot, so a
-    // relayout on exit restores it.
-    m_fullscreenFrame->showFullScreen();
-    const HWND panelHwnd = reinterpret_cast<HWND>(winId());
-    m_fullscreenPrevParent = GetParent(panelHwnd);
-    const HWND frameHwnd = reinterpret_cast<HWND>(m_fullscreenFrame->winId());
-    SetParent(panelHwnd, frameHwnd);
-    // Size the panel to the frame's actual fullscreen client area.
-    RECT rc;
-    GetClientRect(frameHwnd, &rc);
-    SetWindowPos(panelHwnd, HWND_TOP, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
-    m_fullscreenFrame->raise();
-    m_fullscreenFrame->activateWindow();
-    m_fullscreenFrame->setFocus();
-#else
+    // Pure-Qt fullscreen: reparent the whole panel - video, overlays, header,
+    // EPG and control bar - into the frameless frame and let the frame's layout
+    // (zero margins) size it to the screen. libVLC renders through the GDI
+    // (wingdi) output, which follows window moves/resizes with no special
+    // handling, so the video surface's native window relocating along with the
+    // panel is safe.
     m_fullscreenPrevQtParent = parentWidget();
+    m_fullscreenSplitterIndex = -1;
+    m_fullscreenSplitterSizes.clear();
+    if (auto* splitter = qobject_cast<QSplitter*>(m_fullscreenPrevQtParent)) {
+        m_fullscreenSplitterIndex = splitter->indexOf(this);
+        m_fullscreenSplitterSizes = splitter->sizes();
+    }
+
     setParent(m_fullscreenFrame);
     if (auto* fl = m_fullscreenFrame->layout())
         fl->addWidget(this);
+
+    // Force the frame to cover the screen the user is on, edge to edge -
+    // explicit geometry in addition to showFullScreen(), so it is never left
+    // as a smaller windowed rectangle.
+    QScreen* screen = QGuiApplication::screenAt(QCursor::pos());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    if (screen)
+        m_fullscreenFrame->setGeometry(screen->geometry());
     m_fullscreenFrame->showFullScreen();
     m_fullscreenFrame->raise();
-#endif
+    m_fullscreenFrame->activateWindow();
+    m_fullscreenFrame->setFocus();
 
     m_fullscreenActive = true;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().accent, 20));
@@ -601,29 +596,36 @@ void PlayerPanel::exitFullscreen()
     if (!m_fullscreenActive)
         return;
 
-#ifdef Q_OS_WIN
-    // Hide the frame first so the fullscreen surface doesn't linger on top of
-    // the window while the panel is being reparented back.
+    if (auto* fl = m_fullscreenFrame->layout())
+        fl->removeWidget(this);
+
+    // Reparent the panel back and re-insert it into its original slot. A
+    // QSplitter (or any layout) does not re-adopt a widget that is merely
+    // setParent'ed back, so restore the previous position and proportions.
+    if (m_fullscreenPrevQtParent) {
+        setParent(m_fullscreenPrevQtParent);
+        if (auto* splitter = qobject_cast<QSplitter*>(m_fullscreenPrevQtParent)) {
+            const int idx = m_fullscreenSplitterIndex >= 0 ? m_fullscreenSplitterIndex : splitter->count();
+            splitter->insertWidget(qMin(idx, splitter->count()), this);
+            if (!m_fullscreenSplitterSizes.isEmpty() && m_fullscreenSplitterSizes.size() == splitter->count())
+                splitter->setSizes(m_fullscreenSplitterSizes);
+        } else if (auto* pl = m_fullscreenPrevQtParent->layout()) {
+            pl->addWidget(this);
+        }
+    }
+    m_fullscreenPrevQtParent = nullptr;
+    m_fullscreenSplitterIndex = -1;
+    m_fullscreenSplitterSizes.clear();
+
     m_fullscreenFrame->hide();
-    const HWND panelHwnd = reinterpret_cast<HWND>(winId());
-    if (m_fullscreenPrevParent)
-        SetParent(panelHwnd, static_cast<HWND>(m_fullscreenPrevParent));
-    m_fullscreenPrevParent = nullptr;
-    // Qt still thinks the panel lives in its splitter slot; force a relayout
-    // so it snaps back to its in-window size immediately.
+
+    // Force an immediate relayout so the panel snaps back to its in-window
+    // size without a stale fullscreen-sized frame.
     if (QWidget* p = parentWidget()) {
         if (QLayout* l = p->layout())
             l->activate();
         p->update();
     }
-#else
-    if (auto* fl = m_fullscreenFrame->layout())
-        fl->removeWidget(this);
-    if (m_fullscreenPrevQtParent)
-        setParent(m_fullscreenPrevQtParent);
-    m_fullscreenPrevQtParent = nullptr;
-    m_fullscreenFrame->hide();
-#endif
 
     m_fullscreenActive = false;
     m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().text, 20));
@@ -641,19 +643,5 @@ bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
             return true;
         }
     }
-
-#ifdef Q_OS_WIN
-    // Keep the panel filling the fullscreen frame - both when the frame is
-    // resized and when Qt tries to shrink the panel back into its splitter
-    // slot (e.g. the main window is resized while in fullscreen).
-    if (m_fullscreenActive && m_fullscreenFrame
-        && (watched == m_fullscreenFrame || watched == this)
-        && event->type() == QEvent::Resize) {
-        RECT rc;
-        GetClientRect(reinterpret_cast<HWND>(m_fullscreenFrame->winId()), &rc);
-        SetWindowPos(reinterpret_cast<HWND>(winId()), HWND_TOP, 0, 0,
-                     rc.right, rc.bottom, SWP_SHOWWINDOW);
-    }
-#endif
     return QFrame::eventFilter(watched, event);
 }
