@@ -19,14 +19,13 @@ VlcPlaybackEngine::VlcPlaybackEngine(QWidget* videoSurface, int networkCachingMs
         QStringLiteral("--no-osd"),
         QStringLiteral("--http-reconnect"),
         QStringLiteral("--network-caching=%1").arg(qMax(0, networkCachingMs)),
-        // Live-stream low latency: play the segment closest to the live edge
-        // (hls-live-edge defaults to 3) and fetch segments in parallel so a
-        // slow mirror does not stall playback. Buffers stay tiny for a
-        // near-real-time feel, and late frames are dropped rather than piling
-        // up latency.
+        // Live-stream low latency: tiny buffers keep playback close to the
+        // live edge, and late frames are dropped rather than piling up
+        // latency. NOTE: options passed to libvlc_new must be registered VLC
+        // options - unknown ones make libvlc_new() return NULL and kill the
+        // whole backend ("--hls-live-edge" and "--hls-segment-threads" are
+        // Streamlink concepts, not VLC options, and were rejected).
         QStringLiteral("--live-caching=%1").arg(qMax(0, networkCachingMs)),
-        QStringLiteral("--hls-live-edge=1"),
-        QStringLiteral("--hls-segment-threads=4"),
         QStringLiteral("--drop-late-frames"),
         QStringLiteral("--skip-frames"),
 #ifdef Q_OS_WIN
