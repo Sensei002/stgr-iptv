@@ -277,7 +277,7 @@ void VlcPlaybackEngine::attachSurface(QWidget* widget)
 #ifdef Q_OS_WIN
     // winId() must run on the UI thread (QWidget); set_hwnd itself runs on the
     // worker so it is ordered after any pending play/pause/stop commands.
-    const void* hwnd = reinterpret_cast<void*>(m_surface->winId());
+    void* hwnd = reinterpret_cast<void*>(m_surface->winId());
     post([this, hwnd]() {
         if (m_player)
             libvlc_media_player_set_hwnd(m_player, hwnd);
@@ -320,12 +320,14 @@ QString VlcPlaybackEngine::videoInfo() const
         for (unsigned i = 0; i < n && tracks; ++i) {
             if (tracks[i]->i_type != libvlc_track_video)
                 continue;
-            if (tracks[i]->i_width > 0 && tracks[i]->i_height > 0)
-                info = QStringLiteral("%1x%2").arg(tracks[i]->i_width).arg(tracks[i]->i_height);
+            libvlc_video_track_t* v = tracks[i]->u.video;
+            if (v && v->i_width > 0 && v->i_height > 0)
+                info = QStringLiteral("%1x%2").arg(v->i_width).arg(v->i_height);
             else
                 info = tr("stream");
-            if (tracks[i]->i_fps > 0.0f)
-                info += QStringLiteral(" \u00b7 %1 fps").arg(tracks[i]->i_fps, 0, 'f', 0);
+            if (v && v->i_frame_rate_num > 0 && v->i_frame_rate_den > 0)
+                info += QStringLiteral(" \u00b7 %1 fps").arg(
+                    v->i_frame_rate_num / static_cast<double>(v->i_frame_rate_den), 0, 'f', 0);
             if (tracks[i]->i_bitrate > 0)
                 info += QStringLiteral(" \u00b7 %1 Mbit/s")
                             .arg(tracks[i]->i_bitrate / 1000000.0, 0, 'f', 1);
