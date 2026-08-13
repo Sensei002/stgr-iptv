@@ -18,6 +18,17 @@ VlcPlaybackEngine::VlcPlaybackEngine(QWidget* videoSurface, int networkCachingMs
         QStringLiteral("--no-osd"),
         QStringLiteral("--http-reconnect"),
         QStringLiteral("--network-caching=%1").arg(qMax(0, networkCachingMs)),
+#ifdef Q_OS_WIN
+        // Windows: render video through the GDI (wingdi) output instead of
+        // libVLC's default D3D11 output. The D3D11 video-output thread can
+        // stall while its swapchain/device context is presenting (especially
+        // around window resizes, e.g. fullscreen toggles); any control call
+        // made from the UI thread (set_pause, set_hwnd, stop) then blocks on
+        // that thread's lock and the whole app freezes. GDI output has no
+        // such lock and handles window resizes trivially, which makes
+        // play/pause instant and fullscreen transitions seamless.
+        QStringLiteral("--vout=wingdi"),
+#endif
         QStringLiteral("--avcodec-hw=%1").arg(hwMode == 2 ? QStringLiteral("none")
                                                           : (hwMode == 1 ? QStringLiteral("d3d11va")
                                                                          : QStringLiteral("any"))),

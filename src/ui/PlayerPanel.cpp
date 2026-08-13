@@ -504,18 +504,20 @@ void PlayerPanel::enterFullscreen()
 
 #ifdef Q_OS_WIN
     // The CONTAINER moves into the fullscreen frame - never the video surface.
-    // libVLC renders into the surface HWND through a D3D11 swapchain, and
-    // reparenting that window while it is presenting is a known libVLC
-    // deadlock. The plain container HWND has no such constraint, and the
-    // surface only ever resizes through Qt's normal layout path (the same
-    // path used when the user drags the window, which is safe).
-    m_fullscreenFrame->showFullScreen();
+    // libVLC renders into the surface HWND, and reparenting that window while
+    // it is presenting is a known libVLC deadlock. The plain container HWND
+    // has no such constraint, and the surface only ever resizes through Qt's
+    // normal layout path (the same path used when the user drags the window).
     const HWND frameHwnd = reinterpret_cast<HWND>(m_fullscreenFrame->winId());
     const HWND containerHwnd = reinterpret_cast<HWND>(m_videoContainer->winId());
     SetParent(containerHwnd, frameHwnd);
-    RECT rc;
-    GetClientRect(frameHwnd, &rc);
-    SetWindowPos(containerHwnd, HWND_TOP, 0, 0, rc.right, rc.bottom, SWP_SHOWWINDOW);
+    // Size the video to the full screen BEFORE the frame becomes visible so
+    // the transition never flashes an empty black frame (the Resize handler
+    // in eventFilter keeps the container filled afterwards).
+    SetWindowPos(containerHwnd, HWND_TOP, 0, 0,
+                 GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+                 SWP_SHOWWINDOW);
+    m_fullscreenFrame->showFullScreen();
     m_fullscreenFrame->raise();
     m_fullscreenFrame->activateWindow();
     m_fullscreenFrame->setFocus();
@@ -539,10 +541,12 @@ void PlayerPanel::exitFullscreen()
     auto* root = qobject_cast<QVBoxLayout*>(layout());
 
 #ifdef Q_OS_WIN
+    // Hide the frame first so the fullscreen surface doesn't linger on top of
+    // the window while the container is being reparented back into it.
+    m_fullscreenFrame->hide();
     const HWND panelHwnd = reinterpret_cast<HWND>(winId());
     const HWND containerHwnd = reinterpret_cast<HWND>(m_videoContainer->winId());
     SetParent(containerHwnd, panelHwnd);
-    m_fullscreenFrame->hide();
 #else
     m_videoContainer->setParent(this);
     m_fullscreenFrame->hide();
