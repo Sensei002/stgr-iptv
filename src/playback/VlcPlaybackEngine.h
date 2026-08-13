@@ -40,7 +40,8 @@ public:
 
     bool isValid() const { return m_vlc != nullptr && m_player != nullptr; }
 
-    void load(const QUrl& url) override;
+    void load(const QUrl& url, const QString& referrer = QString(),
+              const QString& userAgent = QString()) override;
     void play() override;
     void pause() override;
     void stop() override;

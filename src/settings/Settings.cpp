@@ -16,7 +16,7 @@
 
 namespace {
 const char kDefaultTheme[] = "dark";
-constexpr int kDefaultBufferMs = 1500;
+constexpr int kDefaultBufferMs = 300;
 constexpr int kDefaultTimeoutSec = 10;
 constexpr int kDefaultVolume = 60;
 constexpr int kDefaultRetries = 3;
@@ -108,8 +108,6 @@ bool Settings::compactMode() const                 { return value(QStringLiteral
 void Settings::setCompactMode(bool v)              { setValue(QStringLiteral("compactMode"), v); }
 bool Settings::showLogos() const                   { return value(QStringLiteral("showLogos"), true).toBool(); }
 void Settings::setShowLogos(bool v)                { setValue(QStringLiteral("showLogos"), v); }
-QString Settings::viewMode() const                 { return value(QStringLiteral("viewMode"), QStringLiteral("grid")).toString(); }
-void Settings::setViewMode(const QString& v)       { setValue(QStringLiteral("viewMode"), v); }
 bool Settings::animationsEnabled() const           { return value(QStringLiteral("animationsEnabled"), true).toBool(); }
 void Settings::setAnimationsEnabled(bool v)        { setValue(QStringLiteral("animationsEnabled"), v); }
 

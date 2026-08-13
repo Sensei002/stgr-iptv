@@ -1,11 +1,13 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
 #include <QVector>
 
 #include "models/Channel.h"
 #include "playback/IPlaybackEngine.h"
+#include "services/IptvOrgApi.h"
 
 class QWidget;
 
@@ -54,6 +56,18 @@ public:
     // The current channel is always included first.
     QVector<Channel> qualityVariants() const;
 
+    // All known mirrors of the current channel from the iptv-org API
+    // (best-effort; empty when the API has not loaded or has no entry).
+    QVector<IptvStream> apiStreams() const;
+
+    // URL currently being played (may be a backup mirror, not the channel's
+    // playlist URL) - used by the quality menu to mark the active entry.
+    QString activeUrl() const { return m_activeUrl; }
+
+    // Plays a specific mirror (from the API or the quality menu) with its
+    // required Referer/User-Agent headers, keeping the channel identity.
+    void playStream(const IptvStream& stream);
+
     // Human-readable quality label extracted from a channel name
     // ("1080p60", "720", "HD", "4K", ...) or "Auto" when none is present.
     static QString qualityLabel(const Channel& channel);
@@ -83,10 +97,14 @@ signals:
     void reconnecting(int attempt, int maxAttempts);
     void bufferingChanged(int percent);
     void videoInfoChanged(const QString& info);
+    // Emitted when playback transparently switches to a backup mirror URL.
+    void streamSwitched(const QString& title);
 
 private:
     void connectEngine();
     void handleFailure(const QString& message);
+    bool tryNextMirror();
+    void buildFailover();
     void scheduleReconnect();
     void clearReconnect();
     void startLoadTimer();
@@ -100,6 +118,15 @@ private:
     IPlaybackEngine* m_engine = nullptr;
     QTimer m_retryTimer;
     QTimer m_loadTimer;
+    QTimer m_stallTimer;   // mid-playback rebuffer watchdog -> triggers failover
+    QElapsedTimer m_lastSwitch;
+    bool m_wasPlaying = false; // stall watchdog only arms after first Playing
+
+    // Backup mirrors for the current channel (from the iptv-org API),
+    // tried in order when the current URL stalls or fails.
+    QVector<IptvStream> m_failover;
+    int m_failoverIndex = 0;
+    QString m_activeUrl;   // URL actually loaded (primary or a mirror)
 
     int m_retryCount = 0;
     bool m_autoReconnect = true;

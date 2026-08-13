@@ -7,6 +7,7 @@
 
 #include "models/Channel.h"
 #include "playback/IPlaybackEngine.h"
+#include "services/IptvOrgApi.h"
 
 class QLabel;
 class QPushButton;
@@ -27,12 +28,10 @@ class PlaybackController;
 //     mute, aspect, favorite, fullscreen,
 //   * channel info header (logo, name, LIVE badge, EPG now/next).
 //
-// Fullscreen toggling is done purely with Qt: the whole panel (video + all
-// chrome) is reparented into a frameless top-level frame whose geometry is
-// forced to exactly cover the screen, then shown full screen. libVLC renders
-// through the GDI (wingdi) output, which follows window moves/resizes without
-// any special handling, so relocating the video surface's native window along
-// with the panel is safe.
+// Fullscreen is handled by the MainWindow (the app window itself goes full
+// screen, VLC-style); the panel only adapts its chrome via setFullscreenMode()
+// - hiding the channel header/EPG, overlaying the control bar on the video and
+// auto-hiding it until the mouse moves.
 // ---------------------------------------------------------------------------
 class PlayerPanel : public QFrame
 {
@@ -47,6 +46,11 @@ public:
     void togglePlayPause();
     void toggleFullscreen();
     void toggleMute();
+
+    // Adapts the panel chrome for fullscreen: hides the channel header and
+    // EPG, overlays the control bar on the video and auto-hides it until the
+    // mouse moves. The MainWindow owns the actual window fullscreen state.
+    void setFullscreenMode(bool active);
     void volumeUp();
     void volumeDown();
     void cycleAspectRatio();
@@ -61,6 +65,9 @@ signals:
     void backToChannelsRequested();
     void favoriteToggled(const Channel& channel, bool nowFavorite);
     void miniPlayerRequested(const Channel& channel);
+    // The user pressed the fullscreen button (or F/Escape); the MainWindow
+    // owns the actual fullscreen state and calls setFullscreenMode().
+    void fullscreenRequested();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -76,14 +83,18 @@ private:
     void onChannelChanged(const Channel& channel);
     void refreshEpgLabel();
 
-    void enterFullscreen();
-    void exitFullscreen();
+    void showControlsTemporarily();
 
     PlaybackController* m_controller = nullptr;
 
     QWidget* m_videoSurface = nullptr;
     QWidget* m_videoContainer = nullptr;
     QStackedLayout* m_overlayLayout = nullptr;
+    QWidget* m_headerWidget = nullptr;      // channel info row (hidden in fullscreen)
+    QWidget* m_controlsWidget = nullptr;    // overlay host for the control bar
+    QWidget* m_controlsBar = nullptr;       // the pill that holds the buttons
+    QVBoxLayout* m_controlsLayout = nullptr;
+    QTimer m_controlsHideTimer;             // auto-hide the controls in fullscreen
     QWidget* m_loadingPage = nullptr;
     QWidget* m_errorPage = nullptr;
     QWidget* m_reconnectPage = nullptr;
@@ -96,6 +107,8 @@ private:
     QPushButton* m_prevButton = nullptr;
     QPushButton* m_backButton = nullptr;
     QLabel* m_reconnectLabel = nullptr;
+    QWidget* m_switchPage = nullptr;    // transparent wrapper (top-centered)
+    QLabel* m_switchBanner = nullptr;   // "switched to backup stream" notice
 
     QLabel* m_channelLogo = nullptr;
     QLabel* m_channelName = nullptr;
@@ -117,11 +130,7 @@ private:
 
     void rebuildQualityMenu();
 
-    QWidget* m_fullscreenFrame = nullptr;
     bool m_fullscreenActive = false;
-    QWidget* m_fullscreenPrevQtParent = nullptr; // original Qt parent (splitter) restored on exit
-    int m_fullscreenSplitterIndex = -1;          // original slot in the splitter
-    QList<int> m_fullscreenSplitterSizes;        // original splitter proportions
     QTimer m_infoRefreshTimer;
 
     Channel m_current;

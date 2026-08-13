@@ -46,7 +46,7 @@ PlaybackController::PlaybackController(QObject* parent)
     connect(&m_retryTimer, &QTimer::timeout, this, [this]() {
         if (m_engine && m_channel.isValid()) {
             qInfo() << "playback: reconnect attempt" << m_retryCount;
-            m_engine->load(QUrl(m_channel.url));
+            m_engine->load(QUrl(m_activeUrl));
             startLoadTimer();
         }
     });
@@ -57,6 +57,17 @@ PlaybackController::PlaybackController(QObject* parent)
         if (st == IPlaybackEngine::State::Loading || st == IPlaybackEngine::State::Buffering)
             handleFailure(tr("The stream is not responding."));
     });
+
+    // Mid-playback rebuffer watchdog: if a live stream keeps buffering without
+    // recovering (the classic stutter), switch to the next known mirror
+    // instead of waiting for the load timer.
+    m_stallTimer.setSingleShot(true);
+    connect(&m_stallTimer, &QTimer::timeout, this, [this]() {
+        const IPlaybackEngine::State st = state();
+        if (st == IPlaybackEngine::State::Buffering || st == IPlaybackEngine::State::Loading)
+            handleFailure(tr("The stream is stalling."));
+    });
+    m_lastSwitch.start();
 
     m_engine = EngineFactory::create(nullptr, s->bufferSizeMs(), s->hardwareAcceleration(), this);
     if (m_engine) {
@@ -72,14 +83,23 @@ PlaybackController::~PlaybackController()
 {
     stopLoadTimer();
     clearReconnect();
+    m_stallTimer.stop();
 }
 
 void PlaybackController::connectEngine()
 {
     connect(m_engine, &IPlaybackEngine::stateChanged, this, [this](IPlaybackEngine::State st) {
         emit stateChanged(st);
-        if (st == IPlaybackEngine::State::Playing)
+        if (st == IPlaybackEngine::State::Playing) {
+            m_stallTimer.stop();
+            m_wasPlaying = true;
             emit videoInfoChanged(m_engine->videoInfo());
+        } else if (st == IPlaybackEngine::State::Buffering && m_channel.isValid() && m_wasPlaying) {
+            // Mid-playback rebuffer: a stall that outlives the timeout means
+            // the mirror is dying -> fail over. The initial load is left to
+            // the load timer so slow-but-working streams are not yanked.
+            m_stallTimer.start(8000);
+        }
     });
     connect(m_engine, &IPlaybackEngine::bufferingChanged,
             this, &PlaybackController::bufferingChanged);
@@ -101,9 +121,13 @@ void PlaybackController::playChannel(const Channel& channel)
         return;
 
     m_channel = channel;
+    m_activeUrl = channel.url;
     m_retryCount = 0;
+    m_wasPlaying = false;
     clearReconnect();
     updatePoolIndex();
+    buildFailover();
+    m_lastSwitch.restart(); // fresh pacing clock for this channel
 
     if (!m_engine) {
         stopLoadTimer();
@@ -115,7 +139,7 @@ void PlaybackController::playChannel(const Channel& channel)
     qInfo() << "playback: switching to channel" << channel.displayName();
     m_engine->stop();
     m_engine->setAspectRatio(m_aspectMode);
-    m_engine->load(QUrl(channel.url));
+    m_engine->load(QUrl(m_activeUrl));
     startLoadTimer();
     emit channelChanged(channel);
 }
@@ -144,6 +168,7 @@ void PlaybackController::stop()
 {
     stopLoadTimer();
     clearReconnect();
+    m_stallTimer.stop();
     if (m_engine)
         m_engine->stop();
 }
@@ -153,8 +178,35 @@ void PlaybackController::retry()
     if (m_channel.isValid()) {
         m_retryCount = 0;
         clearReconnect();
+        m_failoverIndex = 0;
         playChannel(m_channel);
     }
+}
+
+void PlaybackController::playStream(const IptvStream& stream)
+{
+    if (!m_channel.isValid() || stream.url.isEmpty())
+        return;
+
+    qInfo() << "playback: selecting stream" << (stream.title.isEmpty() ? stream.url : stream.title);
+    m_activeUrl = stream.url;
+    m_retryCount = 0;
+    clearReconnect();
+    m_stallTimer.stop();
+    buildFailover(); // reseed mirrors excluding the URL just selected
+    m_lastSwitch.restart();
+
+    if (!m_engine) {
+        emit stateChanged(IPlaybackEngine::State::Error);
+        emit errorOccurred(tr("Playback is unavailable \u2014 the libVLC runtime could not be loaded."), true);
+        return;
+    }
+
+    m_engine->stop();
+    m_engine->setAspectRatio(m_aspectMode);
+    m_engine->load(QUrl(stream.url), stream.referrer, stream.userAgent);
+    startLoadTimer();
+    emit channelChanged(m_channel);
 }
 
 void PlaybackController::handleFailure(const QString& message)
@@ -162,6 +214,12 @@ void PlaybackController::handleFailure(const QString& message)
     if (!m_channel.isValid())
         return;
 
+    // Prefer a working backup mirror before retrying the same URL.
+    if (m_autoReconnect && tryNextMirror())
+        return;
+
+    // All mirrors exhausted: retry the channel's own playlist URL.
+    m_activeUrl = m_channel.url;
     if (m_autoReconnect && m_retryCount < m_maxRetries) {
         scheduleReconnect();
         return;
@@ -169,6 +227,57 @@ void PlaybackController::handleFailure(const QString& message)
 
     stopLoadTimer();
     emit errorOccurred(message, true);
+}
+
+bool PlaybackController::tryNextMirror()
+{
+    if (!m_engine)
+        return false;
+
+    // Pace mirror switches so a burst of error events cannot thrash through
+    // the whole list in one frame.
+    if (m_lastSwitch.isValid() && m_lastSwitch.elapsed() < 800)
+        return false;
+
+    while (m_failoverIndex < m_failover.size()) {
+        const IptvStream s = m_failover.at(m_failoverIndex++);
+        if (s.url.isEmpty() || s.url == m_activeUrl)
+            continue;
+
+        qInfo() << "playback: switching to backup mirror"
+                << (s.title.isEmpty() ? Log::redactUrl(s.url) : s.title);
+        m_activeUrl = s.url;
+        m_lastSwitch.restart();
+        m_stallTimer.stop();
+        m_engine->stop();
+        m_engine->load(QUrl(s.url), s.referrer, s.userAgent);
+        startLoadTimer();
+        emit streamSwitched(s.title.isEmpty() ? tr("backup stream") : s.title);
+        return true;
+    }
+    return false;
+}
+
+void PlaybackController::buildFailover()
+{
+    m_failover.clear();
+    m_failoverIndex = 0;
+    if (!m_channel.isValid())
+        return;
+
+    const QVector<IptvStream> mirrors = IptvOrgApi::instance()->streamsFor(m_channel);
+    for (const IptvStream& s : mirrors) {
+        if (s.url.isEmpty() || s.url == m_activeUrl)
+            continue;
+        m_failover.append(s);
+    }
+}
+
+QVector<IptvStream> PlaybackController::apiStreams() const
+{
+    if (!m_channel.isValid())
+        return {};
+    return IptvOrgApi::instance()->streamsFor(m_channel);
 }
 
 void PlaybackController::scheduleReconnect()
@@ -258,8 +367,10 @@ void PlaybackController::updatePoolIndex()
 
 void PlaybackController::jumpToLive()
 {
-    if (m_channel.isValid())
+    if (m_channel.isValid()) {
+        m_failoverIndex = 0;
         playChannel(m_channel);
+    }
 }
 
 QVector<Channel> PlaybackController::qualityVariants() const

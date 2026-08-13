@@ -6,6 +6,7 @@
 
 #include "models/Channel.h"
 
+class QFrame;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -49,8 +50,12 @@ private:
     bool textInputFocused() const;
     void updateOnlineIndicator(bool online);
     void checkForUpdates(bool manual = false);
-    void showFirstRunIfNeeded();
+    void setupDefaultPlaylist();
     void saveWindowState();
+
+    // VLC-style fullscreen: the app window itself goes full screen, the
+    // channel chrome is hidden and the player fills everything edge to edge.
+    void togglePlayerFullscreen();
 
     QVector<Channel> resolveFavorites() const;
     QVector<Channel> resolveHistory() const;
@@ -64,10 +69,13 @@ private:
 
     QListWidget* m_sidebar = nullptr;
     QStackedWidget* m_stack = nullptr;
+    QFrame* m_topBar = nullptr;
     QLineEdit* m_searchBox = nullptr;
     QLabel* m_onlineDot = nullptr;
     QLabel* m_onlineLabel = nullptr;
     QLabel* m_offlineBanner = nullptr;
+    bool m_playerFullscreen = false;   // app window is in player fullscreen
+    bool m_wasMaximizedBefore = false; // window state to restore on exit
 
     HomePage* m_home = nullptr;
     LiveTvPage* m_live = nullptr;

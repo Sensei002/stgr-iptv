@@ -20,7 +20,9 @@ ChannelView::ChannelView(QWidget* parent)
 {
     m_model = new ChannelListModel(this);
     m_delegate = new ChannelDelegate(this);
-    m_delegate->setMode(ChannelDelegate::Mode::Grid);
+    // Channel lists are always List view (grid mode was removed).
+    m_delegate->setMode(ChannelDelegate::Mode::List);
+    m_gridMode = false;
 
     m_list = new QListView(this);
     m_list->setModel(m_model);

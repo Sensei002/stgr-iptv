@@ -19,6 +19,16 @@ VlcPlaybackEngine::VlcPlaybackEngine(QWidget* videoSurface, int networkCachingMs
         QStringLiteral("--no-osd"),
         QStringLiteral("--http-reconnect"),
         QStringLiteral("--network-caching=%1").arg(qMax(0, networkCachingMs)),
+        // Live-stream low latency: play the segment closest to the live edge
+        // (hls-live-edge defaults to 3) and fetch segments in parallel so a
+        // slow mirror does not stall playback. Buffers stay tiny for a
+        // near-real-time feel, and late frames are dropped rather than piling
+        // up latency.
+        QStringLiteral("--live-caching=%1").arg(qMax(0, networkCachingMs)),
+        QStringLiteral("--hls-live-edge=1"),
+        QStringLiteral("--hls-segment-threads=4"),
+        QStringLiteral("--drop-late-frames"),
+        QStringLiteral("--skip-frames"),
 #ifdef Q_OS_WIN
         // Windows: render video through the GDI (wingdi) output instead of
         // libVLC's default D3D11 output. The D3D11 video-output thread can
@@ -164,7 +174,8 @@ void VlcPlaybackEngine::handleVlcEvent(const libvlc_event_t* event)
     }
 }
 
-void VlcPlaybackEngine::load(const QUrl& url)
+void VlcPlaybackEngine::load(const QUrl& url, const QString& referrer,
+                             const QString& userAgent)
 {
     if (!isValid()) {
         emit errorOccurred(tr("Playback backend is not available."));
@@ -176,6 +187,8 @@ void VlcPlaybackEngine::load(const QUrl& url)
     }
 
     const QByteArray urlBytes = url.toString(QUrl::FullyEncoded).toUtf8();
+    const QByteArray referrerBytes = referrer.toUtf8();
+    const QByteArray userAgentBytes = userAgent.toUtf8();
 
     // UI-side state updates happen immediately; the actual libvlc calls run on
     // the worker so a stalled input thread can never freeze the UI.
@@ -184,7 +197,7 @@ void VlcPlaybackEngine::load(const QUrl& url)
     setDuration(0);
     setState(State::Loading);
 
-    post([this, urlBytes]() {
+    post([this, urlBytes, referrerBytes, userAgentBytes]() {
         if (!m_player || !m_vlc)
             return;
 
@@ -193,6 +206,13 @@ void VlcPlaybackEngine::load(const QUrl& url)
             emit errorOccurred(tr("Could not open the stream."));
             return;
         }
+
+        // Some IPTV mirrors require a specific Referer / User-Agent header to
+        // serve the stream; the iptv-org API provides these per stream.
+        if (!referrerBytes.isEmpty())
+            libvlc_media_add_option(media, (QByteArrayLiteral(":http-referrer=") + referrerBytes).constData());
+        if (!userAgentBytes.isEmpty())
+            libvlc_media_add_option(media, (QByteArrayLiteral(":http-user-agent=") + userAgentBytes).constData());
 
         if (m_media)
             libvlc_media_release(m_media);

@@ -26,6 +26,7 @@
 #include "playlist/PlaylistManager.h"
 #include "services/FavoritesStore.h"
 #include "services/HistoryStore.h"
+#include "services/IptvOrgApi.h"
 #include "services/NetworkService.h"
 #include "services/PlaylistFetcher.h"
 #include "services/UpdateService.h"
@@ -33,7 +34,6 @@
 #include "ui/Theme.h"
 #include "ui/MiniPlayerWindow.h"
 #include "ui/PlayerPanel.h"
-#include "ui/dialogs/FirstRunDialog.h"
 #include "ui/dialogs/PlaylistDialog.h"
 #include "ui/dialogs/UpdateDialog.h"
 #include "ui/pages/AboutPage.h"
@@ -83,6 +83,11 @@ MainWindow::MainWindow(QWidget* parent)
     FavoritesStore::instance()->load();
     HistoryStore::instance()->load();
 
+    // Load iptv-org mirror data (cached instantly, refreshed in the
+    // background) so the quality menu and auto-failover have real mirror
+    // URLs for the channels.
+    IptvOrgApi::instance()->start();
+
     buildUi();
     wireSignals();
 
@@ -98,9 +103,10 @@ MainWindow::MainWindow(QWidget* parent)
 
     m_manager->load();
 
-    // First run flow.
+    // First run: no dialogs - the IPTV-org public playlist is wired in
+    // automatically. Users can add more playlists from Settings -> Playlists.
     if (!m_settings->firstRunDone()) {
-        QTimer::singleShot(150, this, [this]() { showFirstRunIfNeeded(); });
+        QTimer::singleShot(150, this, [this]() { setupDefaultPlaylist(); });
     }
 
     // Optional startup update check.
@@ -135,19 +141,19 @@ void MainWindow::buildUi()
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // Top bar
-    auto* topBar = new QFrame(central);
-    topBar->setProperty("stgrClass", QStringLiteral("topBar"));
-    topBar->setFixedHeight(56);
-    auto* topLayout = new QHBoxLayout(topBar);
+    // Top bar (member so fullscreen can hide it)
+    m_topBar = new QFrame(central);
+    m_topBar->setProperty("stgrClass", QStringLiteral("topBar"));
+    m_topBar->setFixedHeight(56);
+    auto* topLayout = new QHBoxLayout(m_topBar);
     topLayout->setContentsMargins(16, 0, 16, 0);
     topLayout->setSpacing(12);
 
-    auto* logo = new QLabel(topBar);
+    auto* logo = new QLabel(m_topBar);
     logo->setPixmap(Theme::appIcon().pixmap(34, 34));
 
     // Brand wordmark: icon + stacked product name / dojo line.
-    auto* wordmark = new QWidget(topBar);
+    auto* wordmark = new QWidget(m_topBar);
     auto* wmLayout = new QVBoxLayout(wordmark);
     wmLayout->setContentsMargins(0, 0, 0, 0);
     wmLayout->setSpacing(0);
@@ -159,19 +165,19 @@ void MainWindow::buildUi()
     wmLayout->addWidget(appName);
     wmLayout->addWidget(appTag);
 
-    m_searchBox = new QLineEdit(topBar);
+    m_searchBox = new QLineEdit(m_topBar);
     m_searchBox->setProperty("search", true);
     m_searchBox->setPlaceholderText(tr("Search channels  (Ctrl+K)"));
     m_searchBox->setClearButtonEnabled(true);
     m_searchBox->setMaximumWidth(480);
 
-    m_onlineDot = new QLabel(topBar);
+    m_onlineDot = new QLabel(m_topBar);
     m_onlineDot->setFixedSize(10, 10);
     m_onlineDot->setStyleSheet(QStringLiteral("background: #3ecf8e; border-radius: 5px;"));
-    m_onlineLabel = new QLabel(tr("Online"), topBar);
+    m_onlineLabel = new QLabel(tr("Online"), m_topBar);
     m_onlineLabel->setProperty("stgrClass", QStringLiteral("dim"));
 
-    auto* settingsBtn = new QToolButton(topBar);
+    auto* settingsBtn = new QToolButton(m_topBar);
     settingsBtn->setIcon(Theme::icon(QStringLiteral("settings"), Theme::colors().text, 22));
     settingsBtn->setToolTip(tr("Settings"));
     settingsBtn->setAutoRaise(true);
@@ -186,7 +192,7 @@ void MainWindow::buildUi()
     topLayout->addWidget(m_onlineLabel);
     topLayout->addWidget(settingsBtn);
 
-    root->addWidget(topBar);
+    root->addWidget(m_topBar);
 
     // Offline banner
     m_offlineBanner = new QLabel(tr("You're offline \u2014 showing cached playlists. Live streams need a connection."), central);
@@ -251,7 +257,7 @@ void MainWindow::buildUi()
     connect(fullscreenShortcut, &QShortcut::activated, this, [this]() {
         if (textInputFocused())
             return;
-        m_live->playerPanel()->toggleFullscreen();
+        togglePlayerFullscreen();
     });
 
     auto* muteShortcut = new QShortcut(QKeySequence(Qt::Key_M), this);
@@ -285,9 +291,8 @@ void MainWindow::buildUi()
     auto* escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escShortcut->setContext(Qt::ApplicationShortcut);
     connect(escShortcut, &QShortcut::activated, this, [this]() {
-        if (m_live->playerPanel()->isFullscreenActive()) {
-            m_live->playerPanel()->toggleFullscreen();
-        }
+        if (m_playerFullscreen)
+            togglePlayerFullscreen();
     });
 
     // Mini player.
@@ -380,12 +385,13 @@ void MainWindow::wireSignals()
         emit m_settingsPage->openPlaylistsTabRequested();
     });
 
-    connect(m_settingsPage, &SettingsPage::viewModeChanged, m_live, &LiveTvPage::setGridMode);
     connect(m_settingsPage, &SettingsPage::showLogosChanged, m_live, &LiveTvPage::setShowLogos);
     connect(m_settingsPage, &SettingsPage::playlistsChanged, this, [this]() { refreshAllViews(); });
     connect(m_settingsPage, &SettingsPage::checkForUpdatesRequested, this, [this]() { checkForUpdates(true); });
     connect(m_about, &AboutPage::checkForUpdatesRequested, this, [this]() { checkForUpdates(true); });
 
+    connect(m_live->playerPanel(), &PlayerPanel::fullscreenRequested,
+            this, &MainWindow::togglePlayerFullscreen);
     connect(m_live->playerPanel(), &PlayerPanel::favoriteToggled, this,
             [this](const Channel& ch, bool) {
                 Q_UNUSED(ch);
@@ -573,43 +579,46 @@ void MainWindow::checkForUpdates(bool manual)
     UpdateService::instance()->checkForUpdates();
 }
 
-void MainWindow::showFirstRunIfNeeded()
+void MainWindow::togglePlayerFullscreen()
 {
-    FirstRunDialog dialog(this);
-    if (dialog.exec() != QDialog::Accepted)
-        return;
+    if (!m_playerFullscreen) {
+        // Entering fullscreen: hide the chrome, let the player expand to the
+        // whole window and put the window itself into fullscreen.
+        m_wasMaximizedBefore = isMaximized();
+        m_playerFullscreen = true;
 
-    switch (dialog.choice()) {
-    case FirstRunDialog::Choice::IptvOrg: {
-        const QVector<Playlist> builtIns = PlaylistManager::builtInPlaylists();
-        if (!builtIns.isEmpty()) {
-            const QString id = m_manager->addPlaylist(builtIns.first().name,
-                                                      builtIns.first().url, QString(), true);
-            m_manager->refresh(id);
-        }
-        break;
+        navigateTo(PageLive);
+        m_topBar->hide();
+        m_offlineBanner->hide();
+        m_sidebar->hide();
+        m_live->setPlayerExpanded(true);
+        m_live->playerPanel()->setFullscreenMode(true);
+
+        showFullScreen();
+    } else {
+        // Exit: restore the chrome and the previous window state.
+        m_playerFullscreen = false;
+
+        m_live->playerPanel()->setFullscreenMode(false);
+        m_live->setPlayerExpanded(false);
+        m_topBar->show();
+        m_sidebar->show();
+        updateOnlineIndicator(NetworkService::instance()->isOnline());
+
+        if (m_wasMaximizedBefore)
+            showMaximized();
+        else
+            showNormal();
     }
-    case FirstRunDialog::Choice::AddPlaylist: {
-        PlaylistDialog addDialog(this);
-        if (addDialog.exec() == QDialog::Accepted && !addDialog.url().trimmed().isEmpty()) {
-            const QString id = m_manager->addPlaylist(addDialog.name(), addDialog.url(),
-                                                      addDialog.epgUrl(), addDialog.isBuiltInChoice());
-            if (addDialog.refreshAfterAdd())
-                m_manager->refresh(id);
-        }
-        break;
-    }
-    case FirstRunDialog::Choice::ImportFile: {
-        const QString path = QFileDialog::getOpenFileName(
-            this, tr("Import M3U playlist"), QString(),
-            tr("Playlists (*.m3u *.m3u8);;All files (*.*)"));
-        if (!path.isEmpty())
-            m_manager->importLocalFile(path);
-        break;
-    }
-    case FirstRunDialog::Choice::Continue:
-    default:
-        break;
+}
+
+void MainWindow::setupDefaultPlaylist()
+{
+    const QVector<Playlist> builtIns = PlaylistManager::builtInPlaylists();
+    if (!builtIns.isEmpty()) {
+        const QString id = m_manager->addPlaylist(builtIns.first().name,
+                                                  builtIns.first().url, QString(), true);
+        m_manager->refresh(id);
     }
 
     m_settings->setFirstRunDone(true);

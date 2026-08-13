@@ -1,18 +1,14 @@
 #include "ui/PlayerPanel.h"
 
 #include <QAction>
-#include <QCursor>
 #include <QEvent>
 #include <QGraphicsOpacityEffect>
-#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
 #include <QPushButton>
-#include <QScreen>
 #include <QSlider>
-#include <QSplitter>
 #include <QStackedLayout>
 #include <QToolButton>
 #include <QVariant>
@@ -45,6 +41,14 @@ PlayerPanel::PlayerPanel(PlaybackController* controller, QWidget* parent)
     buildOverlays();
     buildControls();
 
+    // Fullscreen: the control bar auto-hides after a few seconds of no mouse
+    // movement and reappears on hover (VLC-style).
+    m_controlsHideTimer.setSingleShot(true);
+    connect(&m_controlsHideTimer, &QTimer::timeout, this, [this]() {
+        if (m_fullscreenActive)
+            m_controlsWidget->hide();
+    });
+
     connect(m_controller, &PlaybackController::stateChanged,
             this, &PlayerPanel::onStateChanged);
     connect(m_controller, &PlaybackController::errorOccurred,
@@ -55,6 +59,20 @@ PlayerPanel::PlayerPanel(PlaybackController* controller, QWidget* parent)
             this, &PlayerPanel::onChannelChanged);
     connect(m_controller, &PlaybackController::videoInfoChanged,
             this, [this](const QString& info) { m_videoInfo->setText(info); });
+    connect(m_controller, &PlaybackController::streamSwitched,
+            this, [this](const QString& title) {
+                m_switchBanner->setText(tr("Switched to backup stream \u2014 %1").arg(title));
+                m_switchPage->show();
+                m_switchPage->raise();
+                QTimer::singleShot(4000, this, [this]() { m_switchPage->hide(); });
+            });
+
+    // When the iptv-org mirror data arrives (cache load or background
+    // refresh), the quality menu gains the API entries.
+    connect(IptvOrgApi::instance(), &IptvOrgApi::ready, this, [this]() {
+        if (m_current.isValid())
+            rebuildQualityMenu();
+    });
 
     connect(&m_infoRefreshTimer, &QTimer::timeout, this, [this]() {
         const QString info = m_controller->videoInfo();
@@ -73,7 +91,10 @@ void PlayerPanel::buildUi()
     root->setSpacing(8);
 
     // --- channel info header ------------------------------------------------
-    auto* header = new QHBoxLayout();
+    // Wrapped in a widget so fullscreen can hide the whole row at once.
+    m_headerWidget = new QWidget(this);
+    auto* header = new QHBoxLayout(m_headerWidget);
+    header->setContentsMargins(0, 0, 0, 0);
     header->setSpacing(10);
 
     m_channelLogo = new QLabel(this);
@@ -139,6 +160,9 @@ void PlayerPanel::buildUi()
     // container's HWND. When the panel moves (fullscreen, window drags), the
     // video follows through this permanent native parent/child link.
     m_videoContainer->winId();
+    // Escape while in fullscreen must exit even when the video container has
+    // keyboard focus.
+    m_videoContainer->installEventFilter(this);
     m_overlayLayout = new QStackedLayout(m_videoContainer);
     m_overlayLayout->setStackingMode(QStackedLayout::StackAll);
     m_overlayLayout->addWidget(m_videoSurface);
@@ -205,11 +229,32 @@ void PlayerPanel::buildUi()
     reconnectLayout->addStretch();
     m_reconnectPage->setVisible(false);
 
+    // Transient "switched to backup mirror" notice (auto-hidden after a few
+    // seconds; ignores mouse so it never blocks the video). A transparent
+    // wrapper page top-centers the label so only the pill has a background.
+    m_switchPage = new QWidget(m_videoContainer);
+    m_switchPage->setStyleSheet(QStringLiteral("background: transparent;"));
+    m_switchBanner = new QLabel(m_switchPage);
+    m_switchBanner->setWordWrap(true);
+    m_switchBanner->setStyleSheet(QStringLiteral(
+        "color: #e9e9ec; background: rgba(24,42,31,0.92); border: 1px solid #3ecf8e; border-radius: 6px; padding: 6px 12px; font-size: 12px;"));
+    m_switchBanner->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto* switchLayout = new QVBoxLayout(m_switchPage);
+    switchLayout->setContentsMargins(8, 16, 8, 8);
+    auto* switchRow = new QHBoxLayout();
+    switchRow->addStretch();
+    switchRow->addWidget(m_switchBanner);
+    switchRow->addStretch();
+    switchLayout->addLayout(switchRow);
+    switchLayout->addStretch();
+    m_switchPage->hide();
+
     m_overlayLayout->addWidget(m_reconnectPage);
     m_overlayLayout->addWidget(m_loadingPage);
     m_overlayLayout->addWidget(m_errorPage);
+    m_overlayLayout->addWidget(m_switchPage);
 
-    root->addLayout(header);
+    root->addWidget(m_headerWidget);
     root->addWidget(m_videoContainer, 1);
 }
 
@@ -236,7 +281,18 @@ void PlayerPanel::buildOverlays()
 
 void PlayerPanel::buildControls()
 {
-    auto* bar = new QHBoxLayout();
+    // The control bar lives in its own widget so fullscreen can overlay it on
+    // the video (m_controlsWidget is added to the overlay layout) and hide it
+    // when idle. In the normal layout the widget takes its natural height.
+    m_controlsWidget = new QWidget(this);
+    m_controlsWidget->installEventFilter(this); // keep visible while hovering
+    m_controlsLayout = new QVBoxLayout(m_controlsWidget);
+    m_controlsLayout->setContentsMargins(0, 0, 0, 0);
+    m_controlsLayout->setSpacing(0);
+
+    m_controlsBar = new QWidget(m_controlsWidget);
+    auto* bar = new QHBoxLayout(m_controlsBar);
+    bar->setContentsMargins(0, 0, 0, 0);
     bar->setSpacing(6);
 
     auto* prev = new QToolButton(this);
@@ -282,6 +338,13 @@ void PlayerPanel::buildControls()
     connect(m_qualityButton, &QToolButton::triggered, this, [this](QAction* action) {
         if (!action)
             return;
+        // API mirror entries carry an IptvStream; playlist entries a Channel.
+        if (action->data().canConvert<IptvStream>()) {
+            const IptvStream s = action->data().value<IptvStream>();
+            if (!s.url.isEmpty())
+                m_controller->playStream(s);
+            return;
+        }
         const Channel ch = action->data().value<Channel>();
         if (ch.isValid())
             m_controller->playChannel(ch);
@@ -294,18 +357,21 @@ void PlayerPanel::buildControls()
     m_muteButton->setCheckable(true);
     connect(m_muteButton, &QToolButton::clicked, this, [this]() { toggleMute(); });
 
+    m_volumeLabel = new QLabel(this);
+    m_volumeLabel->setProperty("stgrClass", QStringLiteral("dim"));
+    m_volumeLabel->setFixedWidth(34);
+
     m_volumeSlider = new QSlider(Qt::Horizontal, this);
     m_volumeSlider->setRange(0, 100);
-    m_volumeSlider->setValue(qBound(0, m_controller->volume(), 100));
     m_volumeSlider->setFixedWidth(110);
     connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int v) {
         m_controller->setVolume(v);
         m_volumeLabel->setText(QStringLiteral("%1%").arg(v));
     });
-
-    m_volumeLabel = new QLabel(QStringLiteral("%1%").arg(m_volumeSlider->value()), this);
-    m_volumeLabel->setProperty("stgrClass", QStringLiteral("dim"));
-    m_volumeLabel->setFixedWidth(34);
+    // Set the value AFTER the label exists and the connection is live, so a
+    // non-zero persisted volume can't fire valueChanged into a null label.
+    m_volumeSlider->setValue(qBound(0, m_controller->volume(), 100));
+    m_volumeLabel->setText(QStringLiteral("%1%").arg(m_volumeSlider->value()));
 
     m_aspectButton = new QToolButton(this);
     m_aspectButton->setIcon(Theme::icon(QStringLiteral("aspect"), Theme::colors().text, 20));
@@ -336,9 +402,12 @@ void PlayerPanel::buildControls()
     bar->addWidget(m_aspectButton);
     bar->addWidget(m_fullscreenButton);
 
+    m_controlsLayout->addStretch(1); // pushes the pill to the bottom when overlaid
+    m_controlsLayout->addWidget(m_controlsBar);
+
     auto* root = static_cast<QVBoxLayout*>(layout());
     root->addWidget(m_epgLabel);
-    root->addLayout(bar);
+    root->addWidget(m_controlsWidget);
 
     // Keyboard shortcut for mute handled by MainWindow; also accept it here.
     setFocusPolicy(Qt::ClickFocus);
@@ -435,6 +504,7 @@ void PlayerPanel::onChannelChanged(const Channel& channel)
 
     m_videoInfo->clear();
     m_epgLabel->setVisible(false);
+    m_switchPage->hide();
     rebuildQualityMenu();
     refreshEpgLabel();
 }
@@ -445,9 +515,11 @@ void PlayerPanel::rebuildQualityMenu()
         return;
 
     const QVector<Channel> variants = m_controller->qualityVariants();
+    const QVector<IptvStream> api = m_controller->apiStreams();
+    const bool hasApi = !api.isEmpty();
     m_qualityButton->setText(PlaybackController::qualityLabel(m_current));
 
-    if (variants.size() <= 1) {
+    if (variants.size() <= 1 && !hasApi) {
         m_qualityButton->setMenu(nullptr);
         m_qualityButton->setEnabled(false);
         m_qualityButton->setToolTip(tr("No alternate qualities in this playlist"));
@@ -456,6 +528,9 @@ void PlayerPanel::rebuildQualityMenu()
 
     auto* menu = new QMenu(this);
     const QString currentKey = m_current.stableKey();
+    const QString activeUrl = m_controller->activeUrl();
+
+    // Playlist variants first (they are the canonical entries).
     for (const Channel& v : variants) {
         QAction* action = menu->addAction(PlaybackController::qualityLabel(v));
         action->setCheckable(true);
@@ -463,6 +538,22 @@ void PlayerPanel::rebuildQualityMenu()
         action->setData(QVariant::fromValue(v));
         action->setToolTip(v.displayName());
     }
+
+    // Then the iptv-org API mirrors, labelled with their real quality.
+    if (hasApi) {
+        menu->addSeparator();
+        for (const IptvStream& s : api) {
+            QString label = s.quality.isEmpty() ? tr("Auto") : s.quality;
+            if (!s.title.isEmpty())
+                label += QStringLiteral("  \u00b7  %1").arg(s.title);
+            QAction* action = menu->addAction(label);
+            action->setCheckable(true);
+            action->setChecked(s.url == activeUrl);
+            action->setData(QVariant::fromValue(s));
+            action->setToolTip(s.url);
+        }
+    }
+
     m_qualityButton->setMenu(menu);
     m_qualityButton->setEnabled(true);
     m_qualityButton->setToolTip(tr("Select stream quality"));
@@ -512,6 +603,59 @@ void PlayerPanel::refreshEpgLabel()
 // ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
+void PlayerPanel::setFullscreenMode(bool active)
+{
+    if (m_fullscreenActive == active)
+        return;
+    m_fullscreenActive = active;
+
+    auto* root = static_cast<QVBoxLayout*>(layout());
+
+    if (active) {
+        // Hide the chrome: channel header and EPG go away so the video is
+        // truly edge to edge. The control bar is overlaid on the video and
+        // auto-hides until the mouse moves.
+        m_headerWidget->hide();
+        m_epgLabel->hide();
+        root->removeWidget(m_controlsWidget);
+        m_overlayLayout->addWidget(m_controlsWidget);
+        m_controlsWidget->raise();
+        root->setContentsMargins(0, 0, 0, 0);
+        root->setSpacing(0);
+        m_controlsBar->setStyleSheet(QStringLiteral(
+            "background: rgba(12,12,16,0.65); border: 1px solid rgba(255,255,255,0.10);"
+            "border-radius: 10px;"));
+        // Track the mouse so hovering the video brings the controls back.
+        setMouseTracking(true);
+        m_videoContainer->setMouseTracking(true);
+        m_videoSurface->setMouseTracking(true);
+        showControlsTemporarily();
+    } else {
+        m_overlayLayout->removeWidget(m_controlsWidget);
+        root->addWidget(m_controlsWidget);
+        root->setContentsMargins(10, 10, 10, 10);
+        root->setSpacing(8);
+        m_headerWidget->show();
+        refreshEpgLabel(); // restores the EPG row only when there is program data
+        m_controlsBar->setStyleSheet(QString());
+        m_controlsHideTimer.stop();
+        m_controlsWidget->show();
+        m_controlsBar->show();
+        setMouseTracking(false);
+        m_videoContainer->setMouseTracking(false);
+        m_videoSurface->setMouseTracking(false);
+    }
+}
+
+void PlayerPanel::showControlsTemporarily()
+{
+    if (!m_fullscreenActive)
+        return;
+    m_controlsWidget->show();
+    m_controlsWidget->raise();
+    m_controlsHideTimer.start(3000);
+}
+
 void PlayerPanel::togglePlayPause() { m_controller->togglePlayPause(); }
 void PlayerPanel::toggleMute()
 {
@@ -520,13 +664,6 @@ void PlayerPanel::toggleMute()
     m_muteButton->setChecked(muted);
     m_muteButton->setIcon(Theme::icon(muted ? QStringLiteral("mute") : QStringLiteral("volume"),
                                       Theme::colors().text, 20));
-}
-void PlayerPanel::toggleFullscreen()
-{
-    if (m_fullscreenActive)
-        exitFullscreen();
-    else
-        enterFullscreen();
 }
 void PlayerPanel::cycleAspectRatio() { m_controller->cycleAspectRatio(); }
 void PlayerPanel::playPrevious() { m_controller->playPrevious(); }
@@ -543,103 +680,30 @@ void PlayerPanel::volumeDown()
     m_volumeSlider->setValue(m_volumeSlider->value() - 5);
 }
 
-void PlayerPanel::enterFullscreen()
+void PlayerPanel::toggleFullscreen()
 {
-    if (m_fullscreenActive)
-        return;
-
-    if (!m_fullscreenFrame) {
-        m_fullscreenFrame = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
-        m_fullscreenFrame->setStyleSheet(QStringLiteral("background: #000000;"));
-        m_fullscreenFrame->installEventFilter(this);
-        auto* l = new QVBoxLayout(m_fullscreenFrame);
-        l->setContentsMargins(0, 0, 0, 0);
-    }
-
-    // Pure-Qt fullscreen: reparent the whole panel - video, overlays, header,
-    // EPG and control bar - into the frameless frame and let the frame's layout
-    // (zero margins) size it to the screen. libVLC renders through the GDI
-    // (wingdi) output, which follows window moves/resizes with no special
-    // handling, so the video surface's native window relocating along with the
-    // panel is safe.
-    m_fullscreenPrevQtParent = parentWidget();
-    m_fullscreenSplitterIndex = -1;
-    m_fullscreenSplitterSizes.clear();
-    if (auto* splitter = qobject_cast<QSplitter*>(m_fullscreenPrevQtParent)) {
-        m_fullscreenSplitterIndex = splitter->indexOf(this);
-        m_fullscreenSplitterSizes = splitter->sizes();
-    }
-
-    setParent(m_fullscreenFrame);
-    if (auto* fl = m_fullscreenFrame->layout())
-        fl->addWidget(this);
-
-    // Force the frame to cover the screen the user is on, edge to edge -
-    // explicit geometry in addition to showFullScreen(), so it is never left
-    // as a smaller windowed rectangle.
-    QScreen* screen = QGuiApplication::screenAt(QCursor::pos());
-    if (!screen)
-        screen = QGuiApplication::primaryScreen();
-    if (screen)
-        m_fullscreenFrame->setGeometry(screen->geometry());
-    m_fullscreenFrame->showFullScreen();
-    m_fullscreenFrame->raise();
-    m_fullscreenFrame->activateWindow();
-    m_fullscreenFrame->setFocus();
-
-    m_fullscreenActive = true;
-    m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().accent, 20));
-}
-
-void PlayerPanel::exitFullscreen()
-{
-    if (!m_fullscreenActive)
-        return;
-
-    if (auto* fl = m_fullscreenFrame->layout())
-        fl->removeWidget(this);
-
-    // Reparent the panel back and re-insert it into its original slot. A
-    // QSplitter (or any layout) does not re-adopt a widget that is merely
-    // setParent'ed back, so restore the previous position and proportions.
-    if (m_fullscreenPrevQtParent) {
-        setParent(m_fullscreenPrevQtParent);
-        if (auto* splitter = qobject_cast<QSplitter*>(m_fullscreenPrevQtParent)) {
-            const int idx = m_fullscreenSplitterIndex >= 0 ? m_fullscreenSplitterIndex : splitter->count();
-            splitter->insertWidget(qMin(idx, splitter->count()), this);
-            if (!m_fullscreenSplitterSizes.isEmpty() && m_fullscreenSplitterSizes.size() == splitter->count())
-                splitter->setSizes(m_fullscreenSplitterSizes);
-        } else if (auto* pl = m_fullscreenPrevQtParent->layout()) {
-            pl->addWidget(this);
-        }
-    }
-    m_fullscreenPrevQtParent = nullptr;
-    m_fullscreenSplitterIndex = -1;
-    m_fullscreenSplitterSizes.clear();
-
-    m_fullscreenFrame->hide();
-
-    // Force an immediate relayout so the panel snaps back to its in-window
-    // size without a stale fullscreen-sized frame.
-    if (QWidget* p = parentWidget()) {
-        if (QLayout* l = p->layout())
-            l->activate();
-        p->update();
-    }
-
-    m_fullscreenActive = false;
-    m_fullscreenButton->setIcon(Theme::icon(QStringLiteral("fullscreen"), Theme::colors().text, 20));
+    // The MainWindow owns the actual fullscreen state; it listens to this
+    // signal and calls setFullscreenMode() accordingly.
+    emit fullscreenRequested();
 }
 
 bool PlayerPanel::eventFilter(QObject* watched, QEvent* event)
 {
-    // Escape exits fullscreen whether the focus lands on the frame, the panel
-    // or the video surface (all can receive keys while in fullscreen).
+    // While in fullscreen, moving the mouse over the video brings the
+    // auto-hidden control bar back (and restarts its hide timer).
+    if (m_fullscreenActive && event->type() == QEvent::MouseMove) {
+        if (watched == this || watched == m_videoContainer || watched == m_videoSurface
+            || watched == m_controlsWidget)
+            showControlsTemporarily();
+    }
+
+    // Escape exits fullscreen whether the focus lands on the panel, the video
+    // container or the video surface.
     if (event->type() == QEvent::KeyPress
-        && (watched == m_fullscreenFrame || watched == this || watched == m_videoSurface)) {
+        && (watched == this || watched == m_videoContainer || watched == m_videoSurface)) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Escape && m_fullscreenActive) {
-            exitFullscreen();
+            emit fullscreenRequested();
             return true;
         }
     }

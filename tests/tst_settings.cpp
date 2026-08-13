@@ -30,7 +30,7 @@ void SettingsTest::defaultsAreSane()
     s->load();
 
     QCOMPARE(s->hardwareAcceleration(), 2); // software decode by default
-    QCOMPARE(s->bufferSizeMs(), 1500);
+    QCOMPARE(s->bufferSizeMs(), 300);
     QCOMPARE(s->networkTimeoutSec(), 10);
     QCOMPARE(s->maxRetries(), 3);
     QVERIFY(s->autoReconnect());
@@ -54,7 +54,6 @@ void SettingsTest::roundTrip()
     s->setHardwareAcceleration(1);
     s->setBufferSizeMs(2000);
     s->setDefaultVolume(42);
-    s->setViewMode(QStringLiteral("list"));
     s->setFirstRunDone(true);
     s->save();
 
@@ -62,7 +61,6 @@ void SettingsTest::roundTrip()
     QCOMPARE(s->hardwareAcceleration(), 1);
     QCOMPARE(s->bufferSizeMs(), 2000);
     QCOMPARE(s->defaultVolume(), 42);
-    QCOMPARE(s->viewMode(), QStringLiteral("list"));
     QCOMPARE(s->firstRunDone(), true);
 }
 

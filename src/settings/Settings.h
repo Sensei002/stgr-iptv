@@ -58,8 +58,6 @@ public:
     void setCompactMode(bool v);
     bool showLogos() const;
     void setShowLogos(bool v);
-    QString viewMode() const;          // "grid" | "list"
-    void setViewMode(const QString& v);
     bool animationsEnabled() const;
     void setAnimationsEnabled(bool v);
 

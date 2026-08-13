@@ -28,7 +28,6 @@ public:
     void selectPlaylistsTab();
 
 signals:
-    void viewModeChanged(bool grid);
     void showLogosChanged(bool show);
     void playlistsChanged();       // registry mutated here
     void openPlaylistsTabRequested();

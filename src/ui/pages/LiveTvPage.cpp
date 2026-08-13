@@ -23,39 +23,27 @@ LiveTvPage::LiveTvPage(PlaybackController* controller, QWidget* parent)
     root->setContentsMargins(16, 14, 16, 14);
     root->setSpacing(10);
 
-    // --- toolbar ------------------------------------------------------------
-    auto* toolbar = new QHBoxLayout();
+    // --- toolbar (wrapped in a widget so fullscreen can hide the row) --------
+    m_toolbarHost = new QWidget(this);
+    auto* toolbar = new QHBoxLayout(m_toolbarHost);
+    toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
 
-    auto* title = new QLabel(tr("Live TV"), this);
+    auto* title = new QLabel(tr("Live TV"), m_toolbarHost);
     title->setProperty("stgrClass", QStringLiteral("pageTitle"));
 
-    m_sortBox = new QComboBox(this);
+    m_sortBox = new QComboBox(m_toolbarHost);
     m_sortBox->addItem(tr("Sort: Name"), QStringLiteral("name"));
     m_sortBox->addItem(tr("Sort: Country"), QStringLiteral("country"));
     m_sortBox->addItem(tr("Sort: Category"), QStringLiteral("category"));
     m_sortBox->addItem(tr("Sort: Channel number"), QStringLiteral("number"));
     connect(m_sortBox, &QComboBox::currentIndexChanged, this, [this](int) { applySortAndFilter(); });
 
-    m_categoryBox = new QComboBox(this);
+    m_categoryBox = new QComboBox(m_toolbarHost);
     m_categoryBox->setMinimumWidth(180);
     connect(m_categoryBox, &QComboBox::currentIndexChanged, this, [this](int) { applySortAndFilter(); });
 
-    m_gridButton = new QToolButton(this);
-    m_gridButton->setIcon(Theme::icon(QStringLiteral("grid"), Theme::colors().text, 20));
-    m_gridButton->setToolTip(tr("Grid view"));
-    m_gridButton->setCheckable(true);
-    m_gridButton->setAutoRaise(true);
-    connect(m_gridButton, &QToolButton::clicked, this, [this]() { setGridMode(true); });
-
-    m_listButton = new QToolButton(this);
-    m_listButton->setIcon(Theme::icon(QStringLiteral("list"), Theme::colors().text, 20));
-    m_listButton->setToolTip(tr("List view"));
-    m_listButton->setCheckable(true);
-    m_listButton->setAutoRaise(true);
-    connect(m_listButton, &QToolButton::clicked, this, [this]() { setGridMode(false); });
-
-    m_refreshButton = new QToolButton(this);
+    m_refreshButton = new QToolButton(m_toolbarHost);
     m_refreshButton->setIcon(Theme::icon(QStringLiteral("refresh"), Theme::colors().text, 20));
     m_refreshButton->setToolTip(tr("Refresh all playlists"));
     m_refreshButton->setAutoRaise(true);
@@ -64,31 +52,32 @@ LiveTvPage::LiveTvPage(PlaybackController* controller, QWidget* parent)
     toolbar->addStretch(1);
     toolbar->addWidget(m_sortBox);
     toolbar->addWidget(m_categoryBox);
-    toolbar->addWidget(m_listButton);
-    toolbar->addWidget(m_gridButton);
     toolbar->addWidget(m_refreshButton);
-    root->addLayout(toolbar);
+    root->addWidget(m_toolbarHost);
 
     // --- splitter: channel list | player --------------------------------------
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
-    splitter->setChildrenCollapsible(false);
+    m_splitter = new QSplitter(Qt::Horizontal, this);
+    m_splitter->setChildrenCollapsible(false);
 
-    auto* listHost = new QWidget(splitter);
-    auto* listLayout = new QVBoxLayout(listHost);
+    m_listHost = new QWidget(m_splitter);
+    auto* listLayout = new QVBoxLayout(m_listHost);
     listLayout->setContentsMargins(0, 0, 0, 0);
-    m_view = new ChannelView(listHost);
+    m_view = new ChannelView(m_listHost);
     m_view->setEmptyState(tr("No channels yet"),
                           tr("Add a playlist in Settings \u2192 Playlists, then refresh it."));
     listLayout->addWidget(m_view);
 
-    m_player = new PlayerPanel(m_controller, splitter);
+    m_player = new PlayerPanel(m_controller, m_splitter);
 
-    splitter->addWidget(listHost);
-    splitter->addWidget(m_player);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
-    splitter->setSizes({ 520, 560 });
-    root->addWidget(splitter, 1);
+    m_splitter->addWidget(m_listHost);
+    m_splitter->addWidget(m_player);
+    m_splitter->setStretchFactor(0, 3);
+    m_splitter->setStretchFactor(1, 2);
+    m_splitter->setSizes({ 520, 560 });
+    root->addWidget(m_splitter, 1);
+
+    // Channel list is always List view (no grid toggle).
+    m_view->setGridMode(false);
 
     connect(m_view, &ChannelView::channelActivated,
             this, [this](const Channel& ch) {
@@ -180,13 +169,6 @@ void LiveTvPage::setFavoriteKeys(const QSet<QString>& keys)
     m_view->setFavoriteKeys(keys);
 }
 
-void LiveTvPage::setGridMode(bool grid)
-{
-    m_view->setGridMode(grid);
-    m_gridButton->setChecked(grid);
-    m_listButton->setChecked(!grid);
-}
-
 void LiveTvPage::setShowLogos(bool show)
 {
     m_view->setShowLogos(show);
@@ -194,14 +176,28 @@ void LiveTvPage::setShowLogos(bool show)
 
 void LiveTvPage::applySettings()
 {
-    const Settings* s = Settings::instance();
-    if (!m_viewModeInitialized) {
-        // Apply the saved grid/list preference once; the toolbar toggle then
-        // owns the choice until restart.
-        setGridMode(s->viewMode() != QLatin1String("list"));
-        m_viewModeInitialized = true;
+    m_view->setShowLogos(Settings::instance()->showLogos());
+}
+
+void LiveTvPage::setPlayerExpanded(bool expanded)
+{
+    // Hide the toolbar and the channel list so the player fills the whole
+    // page; restore them (and the original proportions) when leaving.
+    m_toolbarHost->setVisible(!expanded);
+    m_listHost->setVisible(!expanded);
+    if (auto* root = qobject_cast<QVBoxLayout*>(layout())) {
+        root->setContentsMargins(expanded ? 0 : 16, expanded ? 0 : 14,
+                                 expanded ? 0 : 16, expanded ? 0 : 14);
+        root->setSpacing(expanded ? 0 : 10);
     }
-    m_view->setShowLogos(s->showLogos());
+    if (expanded) {
+        m_splitter->setStretchFactor(0, 0);
+        m_splitter->setStretchFactor(1, 1);
+    } else {
+        m_splitter->setStretchFactor(0, 3);
+        m_splitter->setStretchFactor(1, 2);
+        m_splitter->setSizes({ 520, 560 });
+    }
 }
 
 void LiveTvPage::focusChannelList()

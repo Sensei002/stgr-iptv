@@ -36,7 +36,10 @@ public:
     explicit IPlaybackEngine(QObject* parent = nullptr);
 
     // -- media control -------------------------------------------------------
-    virtual void load(const QUrl& url) = 0;
+    // referrer/userAgent are optional HTTP headers some IPTV mirrors require
+    // (provided per-stream by the iptv-org API).
+    virtual void load(const QUrl& url, const QString& referrer = QString(),
+                      const QString& userAgent = QString()) = 0;
     virtual void play() = 0;
     virtual void pause() = 0;
     virtual void stop() = 0;

@@ -61,6 +61,8 @@ add_library(stgr_services STATIC
     services/FavoritesStore.h
     services/HistoryStore.cpp
     services/HistoryStore.h
+    services/IptvOrgApi.cpp
+    services/IptvOrgApi.h
     services/EpgManager.cpp
     services/EpgManager.h
     services/UpdateService.cpp
@@ -76,6 +78,7 @@ target_link_libraries(stgr_services PUBLIC
     Qt6::Core
     Qt6::Gui
     Qt6::Network
+    Qt6::Concurrent
 )
 
 # --- playback library (libVLC when available) -------------------------------
@@ -143,8 +146,6 @@ set(STGR_UI_SOURCES
     ui/pages/AboutPage.h
     ui/dialogs/PlaylistDialog.cpp
     ui/dialogs/PlaylistDialog.h
-    ui/dialogs/FirstRunDialog.cpp
-    ui/dialogs/FirstRunDialog.h
     ui/dialogs/UpdateDialog.cpp
     ui/dialogs/UpdateDialog.h
     resources/resources.qrc

@@ -61,6 +61,6 @@ private:
     QLabel* m_emptyTitle = nullptr;
     QLabel* m_emptySubtitle = nullptr;
     QPushButton* m_emptyAction = nullptr;
-    bool m_gridMode = true;
+    bool m_gridMode = false;
     bool m_horizontalStrip = false;
 };

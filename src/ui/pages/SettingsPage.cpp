@@ -188,18 +188,6 @@ QWidget* SettingsPage::buildInterfaceTab()
     });
     form->addRow(logos);
 
-    auto* viewMode = new QComboBox(w);
-    viewMode->addItem(tr("Grid"), QStringLiteral("grid"));
-    viewMode->addItem(tr("List"), QStringLiteral("list"));
-    viewMode->setCurrentIndex(viewMode->findData(s->viewMode()));
-    connect(viewMode, &QComboBox::currentIndexChanged, this, [this, s, viewMode](int) {
-        const QString mode = viewMode->currentData().toString();
-        s->setViewMode(mode);
-        s->save();
-        emit viewModeChanged(mode != QLatin1String("list"));
-    });
-    form->addRow(tr("Channel view:"), viewMode);
-
     auto* animations = new QCheckBox(tr("Enable animations"), w);
     animations->setChecked(s->animationsEnabled());
     connect(animations, &QCheckBox::toggled, this, [s](bool v) { s->setAnimationsEnabled(v); s->save(); });
